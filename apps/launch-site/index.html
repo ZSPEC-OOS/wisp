@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WISP Launch Console</title>
+    <meta
+      name="description"
+      content="WISP launch site with secure API key framework, usage credits, and role-based access controls."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+
+    <header class="topbar" aria-label="Main navigation">
+      <div class="brand-group">
+        <p class="brand-mark" aria-hidden="true">⚡</p>
+        <div>
+          <p class="brand-title">WISP</p>
+          <p class="brand-subtitle">Launch Console</p>
+        </div>
+      </div>
+      <nav>
+        <ul class="nav-list">
+          <li><a href="#platform">Platform</a></li>
+          <li><a href="#security">Security</a></li>
+          <li><a href="#plans">Plans</a></li>
+          <li><a href="#auth">Log in</a></li>
+        </ul>
+      </nav>
+    </header>
+
+    <main id="main-content">
+      <section class="hero" id="platform" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">Accessible, production-ready framework</p>
+          <h1 id="hero-title">Launch WISP with secure API workflows and subscription controls.</h1>
+          <p>
+            This starter launch site includes an authentication framework, Firestore wiring placeholders,
+            role-based access, API key scaffolding, per-user usage meters, and plan-based credit limits.
+          </p>
+          <div class="hero-actions" role="group" aria-label="Launch actions">
+            <a class="btn primary" href="#auth">Get started</a>
+            <a class="btn secondary" href="#security">Review security model</a>
+          </div>
+        </div>
+        <aside class="status-card" aria-live="polite">
+          <h2>Workspace status</h2>
+          <dl>
+            <div>
+              <dt>Authentication</dt>
+              <dd id="auth-status">Not signed in</dd>
+            </div>
+            <div>
+              <dt>Role</dt>
+              <dd id="role-status">Guest</dd>
+            </div>
+            <div>
+              <dt>Selected plan</dt>
+              <dd id="plan-status">Starter</dd>
+            </div>
+            <div>
+              <dt>Credits remaining</dt>
+              <dd id="credits-status">0 / 0</dd>
+            </div>
+          </dl>
+        </aside>
+      </section>
+
+      <section class="grid-section" id="security" aria-labelledby="security-title">
+        <h2 id="security-title">Security and architecture framework</h2>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <h3>API key lifecycle</h3>
+            <p>Generate, rotate, and revoke keys with per-user attribution and endpoint-level scopes.</p>
+            <ul>
+              <li>Scoped keys for search, extract, and research operations</li>
+              <li>Usage audit logs prepared for SIEM ingestion</li>
+              <li>Rate-limit hooks included in the dashboard framework</li>
+            </ul>
+          </article>
+
+          <article class="feature-card">
+            <h3>Subscription usage credits</h3>
+            <p>Plan-driven monthly credits with real-time deduction and overage controls.</p>
+            <ul>
+              <li>Starter, Pro, and Scale templates</li>
+              <li>Soft and hard usage limits</li>
+              <li>Admin override support for exceptional usage</li>
+            </ul>
+          </article>
+
+          <article class="feature-card">
+            <h3>Firestore integration points</h3>
+            <p>Secure-by-default data model placeholders for profile, billing, API key, and usage documents.</p>
+            <ul>
+              <li>Client config file with environment placeholders</li>
+              <li>Collection design for users, subscriptions, and usage</li>
+              <li>Rules-ready schema for tenant isolation</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="grid-section" id="plans" aria-labelledby="plans-title">
+        <h2 id="plans-title">Subscription plan framework</h2>
+        <div class="plan-grid" role="list" aria-label="Subscription plans">
+          <article role="listitem" class="plan-card">
+            <h3>Starter</h3>
+            <p class="plan-price">$0</p>
+            <p>500 credits / month</p>
+            <button class="btn tertiary plan-btn" data-plan="starter">Choose Starter</button>
+          </article>
+          <article role="listitem" class="plan-card featured-plan">
+            <h3>Pro</h3>
+            <p class="plan-price">$49</p>
+            <p>15,000 credits / month</p>
+            <button class="btn tertiary plan-btn" data-plan="pro">Choose Pro</button>
+          </article>
+          <article role="listitem" class="plan-card">
+            <h3>Scale</h3>
+            <p class="plan-price">$199</p>
+            <p>75,000 credits / month</p>
+            <button class="btn tertiary plan-btn" data-plan="scale">Choose Scale</button>
+          </article>
+        </div>
+      </section>
+
+      <section class="auth-layout" id="auth" aria-labelledby="auth-title">
+        <div class="auth-card">
+          <h2 id="auth-title">Log in / create account</h2>
+          <p>Framework UI for Firebase Authentication + Firestore profile initialization.</p>
+
+          <form id="login-form" class="stack" novalidate>
+            <label for="email">Email</label>
+            <input id="email" name="email" type="email" autocomplete="email" required />
+
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required />
+
+            <div class="inline-actions">
+              <button class="btn primary" type="submit">Log in</button>
+              <button class="btn secondary" type="button" id="register-btn">Create account</button>
+            </div>
+          </form>
+
+          <p class="small-note">
+            Admin framework account: <code>admin@wisp.local</code> with password
+            <code>wispadmin</code> for initial staging tests.
+          </p>
+          <button class="btn tertiary" id="logout-btn" type="button">Log out</button>
+          <p id="auth-message" class="live-msg" aria-live="polite"></p>
+        </div>
+
+        <aside class="usage-card" aria-labelledby="usage-title">
+          <h3 id="usage-title">Usage simulation</h3>
+          <p>Test per-user credit enforcement before production billing hooks are connected.</p>
+          <form id="usage-form" class="stack" novalidate>
+            <label for="usage-amount">Credits to consume</label>
+            <input id="usage-amount" name="usage-amount" type="number" min="1" value="25" required />
+            <button class="btn primary" type="submit">Consume credits</button>
+          </form>
+          <div class="api-box" aria-labelledby="api-title">
+            <h4 id="api-title">Firestore/API placeholders</h4>
+            <pre><code id="api-placeholder"></code></pre>
+          </div>
+          <p id="usage-message" class="live-msg" aria-live="polite"></p>
+        </aside>
+      </section>
+    </main>
+
+    <footer>
+      <p>© <span id="year"></span> WISP · Accessible launch framework for Vercel deployments.</p>
+    </footer>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
