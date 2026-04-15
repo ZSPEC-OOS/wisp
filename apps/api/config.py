@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     enable_embeddings: bool = False
     log_level: str = "INFO"
     api_keys: str = ""
+    rate_limit_per_minute: int = 0  # 0 = disabled; set to e.g. 60 to enforce per-key limits
 
 
 settings = Settings()
