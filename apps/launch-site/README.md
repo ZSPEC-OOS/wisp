@@ -27,7 +27,7 @@ Open `http://localhost:4173`.
 ## Deploy to Vercel
 
 1. Import this repository in Vercel.
-2. Set the project root directory to `apps/launch-site`.
+2. Deploy either with project root set to `apps/launch-site` **or** from repo root using the root `vercel.json` rewrite config.
 3. Add Firebase environment values (when wiring production auth).
 4. Deploy.
 
