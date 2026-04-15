@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     api_keys: str = ""
     rate_limit_per_minute: int = 0  # 0 = disabled; set to e.g. 60 to enforce per-key limits
+    # Academic open-access pipeline
+    academic_mailto: str = ""        # Polite-pool email for OpenAlex + CrossRef + Unpaywall
+    s2_api_key: str = ""             # Optional Semantic Scholar key (higher rate limits)
+    academic_max_results: int = 4    # Results per academic provider
 
 
 settings = Settings()
