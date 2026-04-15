@@ -17,6 +17,9 @@ protected_router = APIRouter(dependencies=[Depends(require_api_key)])
 REQ_COUNTER = Counter("wisp_requests_total", "Total API requests", ["endpoint"])
 LATENCY = Histogram("wisp_stage_latency_seconds", "Stage latency", ["stage"])
 EXTRACTION_FAILURES = Counter("wisp_extraction_failures_total", "Extraction failures")
+CACHE_HITS = Counter("wisp_cache_hits_total", "Cache hits", ["endpoint"])
+CACHE_MISSES = Counter("wisp_cache_misses_total", "Cache misses", ["endpoint"])
+ERRORS = Counter("wisp_errors_total", "Errors by endpoint and type", ["endpoint", "error_type"])
 
 
 @public_router.get("/health", response_model=HealthResponse)
@@ -32,12 +35,22 @@ async def metrics() -> Response:
 @protected_router.post("/extract", response_model=ExtractResponse)
 async def extract(payload: ExtractRequest) -> ExtractResponse:
     REQ_COUNTER.labels(endpoint="extract").inc()
+    key = f"extract:{','.join(sorted(str(u) for u in payload.urls))}:{payload.format}:{payload.include_images}"
+    cached = cache.get(key)
+    if cached:
+        CACHE_HITS.labels(endpoint="extract").inc()
+        return ExtractResponse(**cached)
+    CACHE_MISSES.labels(endpoint="extract").inc()
+
     with LATENCY.labels(stage="extract").time():
         docs = await extract_service.extract_many([str(u) for u in payload.urls], payload.format, payload.include_images)
     for doc in docs:
         if doc.status != "ok":
             EXTRACTION_FAILURES.inc()
-    return ExtractResponse(documents=[d.model_dump(mode="json") for d in docs])
+            ERRORS.labels(endpoint="extract", error_type="extraction_failure").inc()
+    body = ExtractResponse(documents=[d.model_dump(mode="json") for d in docs])
+    cache.set(key, body.model_dump(mode="json"), ttl=3600)
+    return body
 
 
 @protected_router.post("/search", response_model=SearchResponse)
@@ -51,7 +64,9 @@ async def search(payload: SearchRequest) -> SearchResponse:
     )
     cached = cache.get(key)
     if cached:
+        CACHE_HITS.labels(endpoint="search").inc()
         return SearchResponse(**cached)
+    CACHE_MISSES.labels(endpoint="search").inc()
 
     with LATENCY.labels(stage="search").time():
         results = await search_service.search(payload.query, max_results=payload.max_results, topic=payload.topic)
@@ -117,6 +132,17 @@ async def site_map(payload: MapRequest) -> MapResponse:
 @protected_router.post("/research", response_model=ResearchResponse)
 async def research(payload: ResearchRequest) -> ResearchResponse:
     REQ_COUNTER.labels(endpoint="research").inc()
+    key = (
+        f"research:{payload.query}:{payload.mode}:{payload.max_sources}:{payload.max_search_rounds}"
+        f":{','.join(sorted(payload.allowed_domains or []))}"
+        f":{','.join(sorted(payload.blocked_domains or []))}"
+    )
+    cached = cache.get(key)
+    if cached:
+        CACHE_HITS.labels(endpoint="research").inc()
+        return ResearchResponse(**cached)
+    CACHE_MISSES.labels(endpoint="research").inc()
+
     try:
         with LATENCY.labels(stage="research").time():
             out = await research_service.run(
@@ -127,8 +153,11 @@ async def research(payload: ResearchRequest) -> ResearchResponse:
                 allowed_domains=payload.allowed_domains,
                 blocked_domains=payload.blocked_domains,
             )
-        return ResearchResponse(**out)
+        body = ResearchResponse(**out)
+        cache.set(key, body.model_dump(mode="json"))
+        return body
     except Exception as exc:
+        ERRORS.labels(endpoint="research", error_type=type(exc).__name__).inc()
         raise HTTPException(status_code=500, detail=f"research_failed: {exc}") from exc
 
 
