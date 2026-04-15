@@ -75,6 +75,24 @@ curl -s localhost:8000/research -X POST -H 'content-type: application/json' -d '
 }' | jq
 ```
 
+
+## API Key Security
+WISP now supports optional API-key auth for all core data endpoints (`/search`, `/extract`, `/crawl`, `/map`, `/research`).
+
+- Set `WISP_API_KEYS` to a comma-separated list of accepted keys.
+- Send the selected key as `X-API-Key` header.
+- `health` and `metrics` remain public for infra compatibility.
+
+Example:
+```bash
+export WISP_API_KEYS="dev-key-1,dev-key-2"
+curl -s localhost:8000/search \
+  -X POST \
+  -H 'content-type: application/json' \
+  -H 'X-API-Key: dev-key-1' \
+  -d '{"query":"wisp","max_results":3}'
+```
+
 ## Tradeoffs
 - DDG instant answer endpoint is free and dependable but less complete than commercial indexes.
 - Crawl is intentionally polite and constrained; speed is traded for safety and resilience.

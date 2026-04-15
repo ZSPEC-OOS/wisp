@@ -17,3 +17,20 @@ def test_extract_contract_validation():
     assert r.status_code == 200
     payload = r.json()
     assert "documents" in payload
+
+
+def test_api_key_enforcement(monkeypatch):
+    from apps.api.dependencies import auth
+
+    monkeypatch.setattr(auth.settings, "api_keys", "test-key")
+    unauthorized = client.post("/search", json={"query": "wisp", "max_results": 1})
+    assert unauthorized.status_code == 401
+
+    authorized = client.post(
+        "/search",
+        json={"query": "wisp", "max_results": 1},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert authorized.status_code == 200
+
+    monkeypatch.setattr(auth.settings, "api_keys", "")

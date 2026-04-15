@@ -1,32 +1,35 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from starlette.responses import Response
 
+from apps.api.dependencies.auth import require_api_key
 from apps.api.dependencies.services import cache, crawl_service, extract_service, map_service, research_service, search_service
 from apps.api.schemas.requests import CrawlRequest, ExtractRequest, MapRequest, ResearchRequest, SearchRequest
 from apps.api.schemas.responses import CrawlResponse, ExtractResponse, HealthResponse, MapResponse, ResearchResponse, SearchResponse
 from packages.search.pipeline import rerank_passages
 
 router = APIRouter()
+public_router = APIRouter()
+protected_router = APIRouter(dependencies=[Depends(require_api_key)])
 
 REQ_COUNTER = Counter("wisp_requests_total", "Total API requests", ["endpoint"])
 LATENCY = Histogram("wisp_stage_latency_seconds", "Stage latency", ["stage"])
 EXTRACTION_FAILURES = Counter("wisp_extraction_failures_total", "Extraction failures")
 
 
-@router.get("/health", response_model=HealthResponse)
+@public_router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse(status="ok")
 
 
-@router.get("/metrics")
+@public_router.get("/metrics")
 async def metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@router.post("/extract", response_model=ExtractResponse)
+@protected_router.post("/extract", response_model=ExtractResponse)
 async def extract(payload: ExtractRequest) -> ExtractResponse:
     REQ_COUNTER.labels(endpoint="extract").inc()
     with LATENCY.labels(stage="extract").time():
@@ -37,7 +40,7 @@ async def extract(payload: ExtractRequest) -> ExtractResponse:
     return ExtractResponse(documents=[d.model_dump(mode="json") for d in docs])
 
 
-@router.post("/search", response_model=SearchResponse)
+@protected_router.post("/search", response_model=SearchResponse)
 async def search(payload: SearchRequest) -> SearchResponse:
     REQ_COUNTER.labels(endpoint="search").inc()
     key = f"search:{payload.query}:{payload.max_results}"
@@ -81,7 +84,7 @@ async def search(payload: SearchRequest) -> SearchResponse:
     return body
 
 
-@router.post("/crawl", response_model=CrawlResponse)
+@protected_router.post("/crawl", response_model=CrawlResponse)
 async def crawl(payload: CrawlRequest) -> CrawlResponse:
     REQ_COUNTER.labels(endpoint="crawl").inc()
     with LATENCY.labels(stage="crawl").time():
@@ -94,7 +97,7 @@ async def crawl(payload: CrawlRequest) -> CrawlResponse:
     return CrawlResponse(**out)
 
 
-@router.post("/map", response_model=MapResponse)
+@protected_router.post("/map", response_model=MapResponse)
 async def site_map(payload: MapRequest) -> MapResponse:
     REQ_COUNTER.labels(endpoint="map").inc()
     with LATENCY.labels(stage="map").time():
@@ -102,7 +105,7 @@ async def site_map(payload: MapRequest) -> MapResponse:
     return MapResponse(**out)
 
 
-@router.post("/research", response_model=ResearchResponse)
+@protected_router.post("/research", response_model=ResearchResponse)
 async def research(payload: ResearchRequest) -> ResearchResponse:
     REQ_COUNTER.labels(endpoint="research").inc()
     try:
@@ -111,3 +114,7 @@ async def research(payload: ResearchRequest) -> ResearchResponse:
         return ResearchResponse(**out)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"research_failed: {exc}") from exc
+
+
+router.include_router(public_router)
+router.include_router(protected_router)
