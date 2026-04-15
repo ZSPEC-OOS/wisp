@@ -14,13 +14,14 @@ const state = {
   role: 'guest',
   plan: 'starter',
   creditsRemaining: 0,
+  highContrast: false,
 };
 
 const el = {
   authStatus: document.getElementById('auth-status'),
   roleStatus: document.getElementById('role-status'),
-  planStatus: document.getElementById('plan-status'),
   creditsStatus: document.getElementById('credits-status'),
+  planBadge: document.getElementById('plan-badge'),
   authMsg: document.getElementById('auth-message'),
   usageMsg: document.getElementById('usage-message'),
   loginForm: document.getElementById('login-form'),
@@ -28,8 +29,10 @@ const el = {
   logoutBtn: document.getElementById('logout-btn'),
   usageForm: document.getElementById('usage-form'),
   usageAmount: document.getElementById('usage-amount'),
-  year: document.getElementById('year'),
   apiPlaceholder: document.getElementById('api-placeholder'),
+  themeToggle: document.getElementById('theme-toggle'),
+  planButtons: document.querySelectorAll('.plan-chip'),
+  tabLinks: document.querySelectorAll('.tab-link'),
 };
 
 const persistState = () => {
@@ -47,28 +50,53 @@ const loadState = () => {
   }
 };
 
+const setTheme = () => {
+  document.documentElement.classList.toggle('high-contrast', state.highContrast);
+};
+
+const updatePlanButtons = () => {
+  el.planButtons.forEach((button) => {
+    const selected = button.dataset.plan === state.plan;
+    button.classList.toggle('is-active', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  });
+};
+
+const updateTabSelection = () => {
+  const currentId = (window.location.hash || '#home').slice(1);
+  el.tabLinks.forEach((tab) => {
+    tab.classList.toggle('is-current', tab.getAttribute('href') === `#${currentId}`);
+  });
+};
+
 const render = () => {
   const plan = PLAN_LIBRARY[state.plan] ?? PLAN_LIBRARY.starter;
   const maxCredits = state.role === 'admin' ? 'Unlimited' : plan.credits;
 
   el.authStatus.textContent = state.user ? `Signed in as ${state.user.email}` : 'Not signed in';
   el.roleStatus.textContent = state.role[0].toUpperCase() + state.role.slice(1);
-  el.planStatus.textContent = plan.label;
+  el.planBadge.textContent = plan.label;
   el.creditsStatus.textContent =
     state.role === 'admin' ? 'Unlimited / Unlimited' : `${state.creditsRemaining} / ${maxCredits}`;
 
-  const payload = {
-    firebase: {
-      apiKey: 'process.env.NEXT_PUBLIC_FIREBASE_API_KEY',
-      authDomain: 'process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN',
-      projectId: 'process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID',
+  el.apiPlaceholder.textContent = JSON.stringify(
+    {
+      firebase: {
+        apiKey: 'process.env.NEXT_PUBLIC_FIREBASE_API_KEY',
+        authDomain: 'process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN',
+        projectId: 'process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID',
+      },
+      firestoreCollections: ['users', 'subscriptions', 'apiKeys', 'usageEvents'],
+      authFramework: ['email/password', 'admin role claim', 'session expiry policy'],
+      apiSecurity: ['key hashing', 'per-key scope', 'usage throttles'],
     },
-    firestoreCollections: ['users', 'subscriptions', 'apiKeys', 'usageEvents'],
-    authFramework: ['email/password', 'admin role claim', 'session expiry policy'],
-    apiSecurity: ['key hashing', 'per-key scope', 'usage throttles'],
-  };
+    null,
+    2,
+  );
 
-  el.apiPlaceholder.textContent = JSON.stringify(payload, null, 2);
+  updatePlanButtons();
+  setTheme();
+  updateTabSelection();
   persistState();
 };
 
@@ -132,24 +160,21 @@ const selectPlan = (planName) => {
     state.creditsRemaining = PLAN_LIBRARY[planName].credits;
   }
 
+  el.usageMsg.textContent = `${PLAN_LIBRARY[planName].label} plan selected.`;
   render();
 };
 
 const bootstrap = () => {
   loadState();
-  el.year.textContent = new Date().getFullYear().toString();
 
-  document.querySelectorAll('.plan-btn').forEach((button) => {
-    button.addEventListener('click', () => {
-      selectPlan(button.dataset.plan);
-      el.usageMsg.textContent = `${PLAN_LIBRARY[button.dataset.plan].label} plan selected.`;
-    });
+  el.planButtons.forEach((button) => {
+    button.addEventListener('click', () => selectPlan(button.dataset.plan));
   });
 
   el.loginForm.addEventListener('submit', (event) => {
     event.preventDefault();
-
     const form = new FormData(event.currentTarget);
+
     const result = login({
       email: String(form.get('email') || '').trim(),
       password: String(form.get('password') || ''),
@@ -171,8 +196,8 @@ const bootstrap = () => {
 
   el.usageForm.addEventListener('submit', (event) => {
     event.preventDefault();
-
     const amount = Number(el.usageAmount.value);
+
     if (!Number.isFinite(amount) || amount < 1) {
       el.usageMsg.textContent = 'Enter a valid credit amount above 0.';
       return;
@@ -182,6 +207,13 @@ const bootstrap = () => {
     el.usageMsg.textContent = result.message;
     render();
   });
+
+  el.themeToggle.addEventListener('click', () => {
+    state.highContrast = !state.highContrast;
+    render();
+  });
+
+  window.addEventListener('hashchange', updateTabSelection);
 
   render();
 };
