@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hmac
+import logging
 from collections.abc import Callable
 
 from fastapi import Header, HTTPException, status
 
 from apps.api.config import settings
+
+logger = logging.getLogger("wisp.auth")
 
 
 def _normalize_key(key: str) -> str:
@@ -28,11 +32,20 @@ def api_key_guard_factory(parse_api_keys: Callable[[str], set[str]] = _parse_api
         if not accepted_keys:
             return
 
-        if not x_api_key or x_api_key not in accepted_keys:
+        key_provided = x_api_key or ""
+        key_valid = any(hmac.compare_digest(key_provided, k) for k in accepted_keys)
+
+        if not key_provided or not key_valid:
+            logger.warning(
+                "auth_failed",
+                extra={"key_prefix": key_provided[:4] if key_provided else None, "detail": "invalid_or_missing_api_key"},
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid_or_missing_api_key",
             )
+
+        logger.info("auth_ok", extra={"key_prefix": key_provided[:4]})
 
     return require_api_key
 

@@ -43,7 +43,12 @@ async def extract(payload: ExtractRequest) -> ExtractResponse:
 @protected_router.post("/search", response_model=SearchResponse)
 async def search(payload: SearchRequest) -> SearchResponse:
     REQ_COUNTER.labels(endpoint="search").inc()
-    key = f"search:{payload.query}:{payload.max_results}"
+    key = (
+        f"search:{payload.query}:{payload.max_results}:{payload.topic}"
+        f":{payload.start_date}:{payload.end_date}"
+        f":{','.join(sorted(payload.allowed_domains or []))}"
+        f":{','.join(sorted(payload.blocked_domains or []))}"
+    )
     cached = cache.get(key)
     if cached:
         return SearchResponse(**cached)
