@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
-from starlette.responses import Response
+from starlette.responses import RedirectResponse, Response
 
 from apps.api.dependencies.auth import require_api_key
+from apps.api.dependencies.rate_limit import require_rate_limit
 from apps.api.dependencies.services import cache, crawl_service, extract_service, map_service, research_service, search_service
 from apps.api.schemas.requests import CrawlRequest, ExtractRequest, MapRequest, ResearchRequest, SearchRequest
 from apps.api.schemas.responses import CrawlResponse, ExtractResponse, HealthResponse, MapResponse, ResearchResponse, SearchResponse
@@ -12,7 +13,7 @@ from packages.search.pipeline import rerank_passages
 
 router = APIRouter()
 public_router = APIRouter()
-protected_router = APIRouter(dependencies=[Depends(require_api_key)])
+protected_router = APIRouter(dependencies=[Depends(require_api_key), Depends(require_rate_limit)])
 
 REQ_COUNTER = Counter("wisp_requests_total", "Total API requests", ["endpoint"])
 LATENCY = Histogram("wisp_stage_latency_seconds", "Stage latency", ["stage"])
@@ -163,3 +164,32 @@ async def research(payload: ResearchRequest) -> ResearchResponse:
 
 router.include_router(public_router)
 router.include_router(protected_router)
+
+# 308 Permanent Redirect aliases so old unversioned paths remain usable
+# for one release cycle while callers migrate to /v1/.
+legacy_router = APIRouter(include_in_schema=False)
+
+
+@legacy_router.post("/search")
+async def legacy_search(_: Request) -> RedirectResponse:
+    return RedirectResponse(url="/v1/search", status_code=308)
+
+
+@legacy_router.post("/extract")
+async def legacy_extract(_: Request) -> RedirectResponse:
+    return RedirectResponse(url="/v1/extract", status_code=308)
+
+
+@legacy_router.post("/crawl")
+async def legacy_crawl(_: Request) -> RedirectResponse:
+    return RedirectResponse(url="/v1/crawl", status_code=308)
+
+
+@legacy_router.post("/map")
+async def legacy_map(_: Request) -> RedirectResponse:
+    return RedirectResponse(url="/v1/map", status_code=308)
+
+
+@legacy_router.post("/research")
+async def legacy_research(_: Request) -> RedirectResponse:
+    return RedirectResponse(url="/v1/research", status_code=308)

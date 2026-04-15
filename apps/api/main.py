@@ -7,12 +7,12 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from apps.api.config import settings
-from apps.api.routes.api import router
+from apps.api.routes.api import legacy_router, protected_router, public_router
 from packages.common.logging import _request_id_var, configure_logging
 
 configure_logging(settings.log_level)
 
-app = FastAPI(title="WISP API", version="0.1.0", description="Free, self-hostable web research platform")
+app = FastAPI(title="WISP API", version="1.0.0", description="Free, self-hostable web research platform")
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
@@ -29,16 +29,24 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(RequestIDMiddleware)
-app.include_router(router)
+
+# Public infrastructure endpoints at root (no version prefix)
+app.include_router(public_router)
+# Versioned API — canonical paths are /v1/*
+app.include_router(protected_router, prefix="/v1")
+# 308 redirects from legacy unversioned paths to /v1/* (backward compat)
+app.include_router(legacy_router)
 
 
 @app.get("/")
 async def root() -> dict[str, str]:
     return {
         "name": "WISP API",
+        "version": "1.0.0",
         "status": "ok",
         "docs": "/docs",
         "health": "/health",
+        "api_base": "/v1",
     }
 
 
