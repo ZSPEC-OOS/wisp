@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
-from packages.common.models import Citation, Passage
+from packages.common.models import Citation, Passage, SearchResult
 from packages.extract.service import ExtractService
+from packages.search.enrichers import UnpaywallResolver
 from packages.search.pipeline import SearchService, rerank_passages
 
 
@@ -53,9 +55,15 @@ def _build_output(mode: str, ranked: list[Passage], citations: list[Citation]) -
 
 
 class ResearchService:
-    def __init__(self, search: SearchService, extract: ExtractService):
+    def __init__(
+        self,
+        search: SearchService,
+        extract: ExtractService,
+        unpaywall: UnpaywallResolver | None = None,
+    ):
         self.search = search
         self.extract = extract
+        self.unpaywall = unpaywall
 
     async def run(
         self,
@@ -103,7 +111,16 @@ class ResearchService:
 
         unique = {str(r.url): r for r in all_results}
         top = list(unique.values())[:max_sources]
-        docs = await self.extract.extract_many([str(r.url) for r in top])
+
+        # Resolve OA PDF URLs via Unpaywall for academic results that have a DOI
+        if self.unpaywall:
+            top = list(
+                await asyncio.gather(*[self.unpaywall.enrich(r) for r in top])
+            )
+
+        # Prefer OA PDF URL for extraction when available
+        extract_urls = [r.oa_pdf_url or str(r.url) for r in top]
+        docs = await self.extract.extract_many(extract_urls)
 
         passages: list[Passage] = []
         citations: list[Citation] = []
