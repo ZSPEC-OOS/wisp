@@ -1,219 +1,213 @@
-const PLAN_LIBRARY = {
+'use strict';
+
+const PLANS = {
   starter: { label: 'Starter', credits: 500 },
-  pro: { label: 'Pro', credits: 15000 },
-  scale: { label: 'Scale', credits: 75000 },
+  pro:     { label: 'Pro',     credits: 15_000 },
+  scale:   { label: 'Scale',   credits: 75_000 },
 };
 
-const ADMIN = {
-  email: 'admin@wisp.local',
-  password: 'wispadmin',
-};
+const ADMIN = { email: 'admin@wisp.local', password: 'wispadmin' };
 
 const state = {
   user: null,
   role: 'guest',
   plan: 'starter',
   creditsRemaining: 0,
-  highContrast: false,
+  apiKey: null,
+  darkMode: true,
 };
+
+// ── DOM refs ──────────────────────────────────────────────
+const $ = id => document.getElementById(id);
 
 const el = {
-  authStatus: document.getElementById('auth-status'),
-  roleStatus: document.getElementById('role-status'),
-  creditsStatus: document.getElementById('credits-status'),
-  planBadge: document.getElementById('plan-badge'),
-  authMsg: document.getElementById('auth-message'),
-  usageMsg: document.getElementById('usage-message'),
-  loginForm: document.getElementById('login-form'),
-  registerBtn: document.getElementById('register-btn'),
-  logoutBtn: document.getElementById('logout-btn'),
-  usageForm: document.getElementById('usage-form'),
-  usageAmount: document.getElementById('usage-amount'),
-  apiPlaceholder: document.getElementById('api-placeholder'),
-  themeToggle: document.getElementById('theme-toggle'),
-  planButtons: document.querySelectorAll('.plan-chip'),
-  tabLinks: document.querySelectorAll('.tab-link'),
+  themeToggle:    $('theme-toggle'),
+  statusBar:      $('status-bar'),
+  planDisplay:    $('plan-display'),
+  creditsDisplay: $('credits-display'),
+  apikeyDisplay:  $('apikey-display'),
+  copyKeyBtn:     $('copy-key-btn'),
+  logoutBtn:      $('logout-btn'),
+  loginForm:      $('login-form'),
+  registerBtn:    $('register-btn'),
+  authMsg:        $('auth-message'),
+  authGate:       $('auth-gate'),
+  authDash:       $('auth-dash'),
+  dashEmail:      $('dash-email'),
+  dashPlan:       $('dash-plan'),
+  apikeyLarge:    $('apikey-large'),
+  copyKeyBtnDash: $('copy-key-btn-dash'),
+  dashCredits:    $('dash-credits'),
+  signInLink:     $('signin-link'),
+  planMsg:        $('plan-msg'),
+  planSelects:    document.querySelectorAll('.plan-select'),
 };
 
-const persistState = () => {
-  localStorage.setItem('wisp-launch-state', JSON.stringify(state));
+// ── Persistence ───────────────────────────────────────────
+const save = () => {
+  try { localStorage.setItem('wisp-state', JSON.stringify(state)); } catch {}
 };
 
-const loadState = () => {
+const load = () => {
   try {
-    const raw = localStorage.getItem('wisp-launch-state');
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    Object.assign(state, parsed);
+    const raw = localStorage.getItem('wisp-state');
+    if (raw) Object.assign(state, JSON.parse(raw));
   } catch {
-    localStorage.removeItem('wisp-launch-state');
+    localStorage.removeItem('wisp-state');
   }
 };
 
-const setTheme = () => {
-  document.documentElement.classList.toggle('high-contrast', state.highContrast);
+// ── Clipboard ─────────────────────────────────────────────
+const copyToClipboard = async (text, btn) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  } catch {
+    btn.textContent = 'Failed';
+  }
 };
 
-const updatePlanButtons = () => {
-  el.planButtons.forEach((button) => {
-    const selected = button.dataset.plan === state.plan;
-    button.classList.toggle('is-active', selected);
-    button.setAttribute('aria-pressed', String(selected));
-  });
-};
-
-const updateTabSelection = () => {
-  const currentId = (window.location.hash || '#home').slice(1);
-  el.tabLinks.forEach((tab) => {
-    tab.classList.toggle('is-current', tab.getAttribute('href') === `#${currentId}`);
-  });
-};
-
+// ── Render ────────────────────────────────────────────────
 const render = () => {
-  const plan = PLAN_LIBRARY[state.plan] ?? PLAN_LIBRARY.starter;
-  const maxCredits = state.role === 'admin' ? 'Unlimited' : plan.credits;
+  const plan = PLANS[state.plan] ?? PLANS.starter;
+  const authed = !!state.user;
+  const isAdmin = state.role === 'admin';
+  const creditsText = isAdmin
+    ? 'Unlimited'
+    : `${state.creditsRemaining.toLocaleString()} / ${plan.credits.toLocaleString()}`;
 
-  el.authStatus.textContent = state.user ? `Signed in as ${state.user.email}` : 'Not signed in';
-  el.roleStatus.textContent = state.role[0].toUpperCase() + state.role.slice(1);
-  el.planBadge.textContent = plan.label;
-  el.creditsStatus.textContent =
-    state.role === 'admin' ? 'Unlimited / Unlimited' : `${state.creditsRemaining} / ${maxCredits}`;
+  // Theme
+  document.documentElement.setAttribute('data-theme', state.darkMode ? 'dark' : 'light');
 
-  el.apiPlaceholder.textContent = JSON.stringify(
-    {
-      firebase: {
-        apiKey: 'process.env.NEXT_PUBLIC_FIREBASE_API_KEY',
-        authDomain: 'process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN',
-        projectId: 'process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID',
-      },
-      firestoreCollections: ['users', 'subscriptions', 'apiKeys', 'usageEvents'],
-      authFramework: ['email/password', 'admin role claim', 'session expiry policy'],
-      apiSecurity: ['key hashing', 'per-key scope', 'usage throttles'],
-    },
-    null,
-    2,
-  );
+  // Status bar
+  el.statusBar.classList.toggle('hidden', !authed);
+  if (authed) {
+    el.planDisplay.textContent = plan.label;
+    el.creditsDisplay.textContent = creditsText;
+    el.apikeyDisplay.textContent = state.apiKey ?? '—';
+  }
 
-  updatePlanButtons();
-  setTheme();
-  updateTabSelection();
-  persistState();
+  // Account section: form vs dashboard
+  el.authGate.classList.toggle('hidden', authed);
+  el.authDash.classList.toggle('hidden', !authed);
+  if (authed) {
+    el.dashEmail.textContent = state.user.email;
+    el.dashPlan.textContent = plan.label;
+    el.apikeyLarge.textContent = state.apiKey ?? '—';
+    el.dashCredits.textContent = creditsText;
+  }
+
+  // Nav sign-in link
+  el.signInLink.textContent = authed
+    ? state.user.email.split('@')[0]
+    : 'Sign in';
+
+  // Plan selection buttons
+  el.planSelects.forEach(btn => {
+    const selected = btn.dataset.plan === state.plan;
+    btn.setAttribute('aria-pressed', String(selected));
+    btn.textContent = selected
+      ? 'Current plan'
+      : `Select ${PLANS[btn.dataset.plan]?.label ?? ''}`;
+    btn.classList.toggle('btn-primary', selected);
+    btn.classList.toggle('btn-outline', !selected);
+  });
+
+  save();
 };
 
-const login = ({ email, password }) => {
+// ── Auth ──────────────────────────────────────────────────
+const doLogin = (email, password) => {
   if (email === ADMIN.email && password === ADMIN.password) {
-    state.user = { email, uid: 'admin' };
-    state.role = 'admin';
-    state.creditsRemaining = Number.MAX_SAFE_INTEGER;
-    return { ok: true, message: 'Admin login successful. Unlimited usage is enabled.' };
+    Object.assign(state, {
+      user: { email },
+      role: 'admin',
+      creditsRemaining: 0,
+      apiKey: 'wsp_admin_unlimited',
+    });
+    return { ok: true, message: 'Admin signed in — unlimited credits enabled.' };
   }
-
-  if (!email || password.length < 6) {
-    return { ok: false, message: 'Use a valid email and password (minimum 6 characters).' };
+  if (!email.includes('@') || password.length < 6) {
+    return { ok: false, message: 'Enter a valid email and a password of at least 6 characters.' };
   }
-
-  const plan = PLAN_LIBRARY[state.plan] ?? PLAN_LIBRARY.starter;
-  state.user = { email, uid: crypto.randomUUID() };
-  state.role = 'user';
-  state.creditsRemaining = plan.credits;
-  return { ok: true, message: `Welcome ${email}. ${plan.credits} credits allocated.` };
-};
-
-const register = () => {
-  const email = document.getElementById('email').value.trim();
-  const password = document.getElementById('password').value;
-  const res = login({ email, password });
-  el.authMsg.textContent = res.ok
-    ? `${res.message} (Framework mode: replace this stub with Firebase createUserWithEmailAndPassword.)`
-    : res.message;
-  render();
-};
-
-const consumeCredits = (amount) => {
-  if (!state.user) {
-    return { ok: false, message: 'Please sign in before consuming credits.' };
-  }
-
-  if (state.role === 'admin') {
-    return { ok: true, message: `Admin usage approved for ${amount} credits. No deduction applied.` };
-  }
-
-  if (amount > state.creditsRemaining) {
-    return {
-      ok: false,
-      message: `Credit limit reached. Requested ${amount}, but only ${state.creditsRemaining} remain.`,
-    };
-  }
-
-  state.creditsRemaining -= amount;
+  const plan = PLANS[state.plan] ?? PLANS.starter;
+  Object.assign(state, {
+    user: { email },
+    role: 'user',
+    creditsRemaining: plan.credits,
+    apiKey: `wsp_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`,
+  });
   return {
     ok: true,
-    message: `${amount} credits consumed. ${state.creditsRemaining} credits remain in this billing cycle.`,
+    message: `Signed in. ${plan.credits.toLocaleString()} credits allocated on the ${plan.label} plan.`,
   };
 };
 
-const selectPlan = (planName) => {
-  if (!PLAN_LIBRARY[planName]) return;
-  state.plan = planName;
-
-  if (state.role !== 'admin' && state.user) {
-    state.creditsRemaining = PLAN_LIBRARY[planName].credits;
+// ── Plan selection ────────────────────────────────────────
+const selectPlan = name => {
+  if (!PLANS[name]) return;
+  state.plan = name;
+  if (state.user && state.role !== 'admin') {
+    state.creditsRemaining = PLANS[name].credits;
   }
-
-  el.usageMsg.textContent = `${PLAN_LIBRARY[planName].label} plan selected.`;
+  el.planMsg.textContent = `${PLANS[name].label} plan selected.`;
   render();
 };
 
+// ── Bootstrap ─────────────────────────────────────────────
 const bootstrap = () => {
-  loadState();
-
-  el.planButtons.forEach((button) => {
-    button.addEventListener('click', () => selectPlan(button.dataset.plan));
-  });
-
-  el.loginForm.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-
-    const result = login({
-      email: String(form.get('email') || '').trim(),
-      password: String(form.get('password') || ''),
-    });
-
-    el.authMsg.textContent = result.message;
-    render();
-  });
-
-  el.registerBtn.addEventListener('click', register);
-
-  el.logoutBtn.addEventListener('click', () => {
-    state.user = null;
-    state.role = 'guest';
-    state.creditsRemaining = 0;
-    el.authMsg.textContent = 'Signed out.';
-    render();
-  });
-
-  el.usageForm.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const amount = Number(el.usageAmount.value);
-
-    if (!Number.isFinite(amount) || amount < 1) {
-      el.usageMsg.textContent = 'Enter a valid credit amount above 0.';
-      return;
-    }
-
-    const result = consumeCredits(amount);
-    el.usageMsg.textContent = result.message;
-    render();
-  });
+  load();
 
   el.themeToggle.addEventListener('click', () => {
-    state.highContrast = !state.highContrast;
+    state.darkMode = !state.darkMode;
     render();
   });
 
-  window.addEventListener('hashchange', updateTabSelection);
+  el.planSelects.forEach(btn => {
+    btn.addEventListener('click', () => selectPlan(btn.dataset.plan));
+  });
+
+  el.loginForm.addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const result = doLogin(
+      String(fd.get('email') ?? '').trim(),
+      String(fd.get('password') ?? ''),
+    );
+    el.authMsg.textContent = result.message;
+    el.authMsg.style.color = result.ok ? 'var(--success)' : 'var(--danger)';
+    if (result.ok) e.currentTarget.reset();
+    render();
+  });
+
+  el.registerBtn.addEventListener('click', () => {
+    const email = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value;
+    const result = doLogin(email, password);
+    el.authMsg.textContent = result.ok
+      ? `Account created — ${result.message}`
+      : result.message;
+    el.authMsg.style.color = result.ok ? 'var(--success)' : 'var(--danger)';
+    if (result.ok) el.loginForm.reset();
+    render();
+  });
+
+  el.logoutBtn.addEventListener('click', () => {
+    Object.assign(state, { user: null, role: 'guest', creditsRemaining: 0, apiKey: null });
+    el.authMsg.textContent = 'Signed out.';
+    el.authMsg.style.color = 'var(--muted)';
+    render();
+  });
+
+  el.copyKeyBtn?.addEventListener('click', () => {
+    if (state.apiKey) copyToClipboard(state.apiKey, el.copyKeyBtn);
+  });
+
+  el.copyKeyBtnDash?.addEventListener('click', () => {
+    if (state.apiKey) copyToClipboard(state.apiKey, el.copyKeyBtnDash);
+  });
 
   render();
 };

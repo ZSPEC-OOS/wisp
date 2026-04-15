@@ -1,127 +1,220 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <meta name="format-detection" content="telephone=no, date=no, email=no, address=no" />
-    <title>WISP for iPhone</title>
-    <meta
-      name="description"
-      content="iPhone-optimized WISP launch experience with native-feeling navigation, touch-friendly controls, and accessible UI."
-    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WISP — Web Research API</title>
+    <meta name="description" content="Search, extract, crawl, and synthesize the open web. Free and self-hostable." />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <a class="skip-link" href="#main-content">Skip to content</a>
+    <a class="skip-link" href="#main">Skip to main content</a>
 
-    <header class="ios-nav" aria-label="Primary header">
-      <div>
-        <p class="nav-title">WISP</p>
-        <p class="nav-subtitle">Launch Console</p>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="logo" href="#home">WISP</a>
+        <nav class="site-nav" aria-label="Site navigation">
+          <a href="#features" class="hide-mobile">Features</a>
+          <a href="#plans">Pricing</a>
+          <a href="/docs" class="hide-mobile">Docs</a>
+          <a id="signin-link" href="#account" class="nav-account">Sign in</a>
+        </nav>
+        <button id="theme-toggle" class="icon-btn" type="button" aria-label="Toggle light/dark mode">◐</button>
       </div>
-      <button id="theme-toggle" class="icon-btn" type="button" aria-label="Toggle contrast mode">◐</button>
     </header>
 
-    <main id="main-content" class="content-shell" tabindex="-1">
-      <section id="home" class="panel" aria-labelledby="home-title">
-        <p class="eyebrow">Built for Safari on iPhone</p>
-        <h1 id="home-title">A launch site that feels native to iOS.</h1>
-        <p class="lead">
-          This mobile-first experience follows Apple-style spacing, readable typography, safe-area behavior,
-          and large touch targets for one-handed use.
-        </p>
-        <div class="cta-row" role="group" aria-label="Primary actions">
-          <a class="btn btn-primary" href="#auth">Get started</a>
-          <a class="btn btn-secondary" href="#usage">Usage</a>
+    <main id="main">
+
+      <!-- ── Hero ─────────────────────────────────────── -->
+      <section id="home" class="hero" aria-labelledby="hero-heading">
+        <div class="hero-glow" aria-hidden="true"></div>
+        <div class="container hero-inner">
+          <p class="eyebrow">Open-source · Self-hostable · Free</p>
+          <h1 id="hero-heading">Research the open web<br class="br-lg" /> with one API.</h1>
+          <p class="hero-lead">
+            Search, extract, crawl, and synthesize any corner of the internet.
+            No vendor lock-in, no black boxes.
+          </p>
+          <div class="hero-cta">
+            <a class="btn btn-primary btn-lg" href="#account">Get started free</a>
+            <a class="btn btn-ghost btn-lg" href="/docs">Read the docs →</a>
+          </div>
         </div>
       </section>
 
-      <section id="status" class="panel" aria-labelledby="status-title">
-        <div class="section-head">
-          <h2 id="status-title">Workspace status</h2>
-          <span class="status-pill" id="plan-badge">Starter</span>
+      <!-- ── Status bar (shown after sign-in) ─────────── -->
+      <div id="status-bar" class="status-bar hidden" role="status" aria-label="Account status">
+        <div class="container status-inner">
+          <div class="status-kv">
+            <span class="status-label">Plan</span>
+            <strong id="plan-display">—</strong>
+          </div>
+          <div class="status-kv">
+            <span class="status-label">Credits</span>
+            <strong id="credits-display">—</strong>
+          </div>
+          <div class="status-kv status-key-wrap">
+            <span class="status-label">API key</span>
+            <code id="apikey-display" class="apikey-inline">—</code>
+            <button id="copy-key-btn" class="btn-copy" type="button" aria-label="Copy API key">Copy</button>
+          </div>
+          <button id="logout-btn" class="btn btn-sm btn-ghost-danger" type="button">Sign out</button>
         </div>
-        <dl class="stats-grid">
-          <div>
-            <dt>Authentication</dt>
-            <dd id="auth-status">Not signed in</dd>
-          </div>
-          <div>
-            <dt>Role</dt>
-            <dd id="role-status">Guest</dd>
-          </div>
-          <div>
-            <dt>Credits left</dt>
-            <dd id="credits-status">0 / 0</dd>
-          </div>
-        </dl>
-      </section>
+      </div>
 
-      <section id="plans" class="panel" aria-labelledby="plans-title">
-        <h2 id="plans-title">Plan selection</h2>
-        <p class="helper">Tap a plan to simulate monthly credit limits.</p>
-        <div class="plan-list" role="list" aria-label="Available plans">
-          <button class="plan-chip is-active" role="listitem" data-plan="starter" aria-pressed="true">
-            Starter · 500
-          </button>
-          <button class="plan-chip" role="listitem" data-plan="pro" aria-pressed="false">Pro · 15K</button>
-          <button class="plan-chip" role="listitem" data-plan="scale" aria-pressed="false">Scale · 75K</button>
+      <!-- ── Features ──────────────────────────────────── -->
+      <section id="features" class="section" aria-labelledby="features-heading">
+        <div class="container">
+          <div class="section-head">
+            <h2 id="features-heading">Everything you need<br />to work with the web</h2>
+            <p class="section-sub">Four first-class primitives, one consistent API.</p>
+          </div>
+          <div class="features-grid">
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">◎</span>
+              <h3>Search</h3>
+              <p>Surface ranked, deduplicated results with optional grounded quick-answer extraction.</p>
+              <code class="endpoint">POST /search</code>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">⊡</span>
+              <h3>Extract</h3>
+              <p>Pull clean article text, structured data, or Markdown from any URL.</p>
+              <code class="endpoint">POST /extract</code>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">⊛</span>
+              <h3>Crawl</h3>
+              <p>Graph-traverse a site to a configurable depth with domain and path filters.</p>
+              <code class="endpoint">POST /crawl</code>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">⊕</span>
+              <h3>Research</h3>
+              <p>Multi-step queries that search, extract, and synthesize sources into cited summaries.</p>
+              <code class="endpoint">POST /research</code>
+            </article>
+          </div>
         </div>
       </section>
 
-      <section id="auth" class="panel" aria-labelledby="auth-title">
-        <h2 id="auth-title">Log in / create account</h2>
-        <form id="login-form" class="stack" novalidate>
-          <label for="email">Email</label>
-          <input id="email" name="email" type="email" autocomplete="email" inputmode="email" required />
-
-          <label for="password">Password</label>
-          <input
-            id="password"
-            name="password"
-            type="password"
-            autocomplete="current-password"
-            minlength="6"
-            required
-          />
-
-          <div class="cta-row">
-            <button class="btn btn-primary" type="submit">Log in</button>
-            <button class="btn btn-secondary" type="button" id="register-btn">Create account</button>
+      <!-- ── Pricing ────────────────────────────────────── -->
+      <section id="plans" class="section section--alt" aria-labelledby="plans-heading">
+        <div class="container">
+          <div class="section-head">
+            <h2 id="plans-heading">Simple, credit-based pricing</h2>
+            <p class="section-sub">Pick a plan. Get an API key. Start building.</p>
           </div>
-        </form>
-        <p class="helper">
-          Framework admin account: <code>admin@wisp.local</code> / <code>wispadmin</code>
-        </p>
-        <button class="btn btn-tertiary" id="logout-btn" type="button">Log out</button>
-        <p id="auth-message" class="live-msg" aria-live="polite"></p>
+          <div class="plans-grid">
+            <div class="plan-card">
+              <div class="plan-top">
+                <span class="plan-name">Starter</span>
+                <div class="plan-price">Free</div>
+                <p class="plan-desc">Everything you need to get started.</p>
+              </div>
+              <ul class="plan-perks">
+                <li>500 credits / month</li>
+                <li>All 4 endpoints</li>
+                <li>Community support</li>
+              </ul>
+              <button class="btn btn-outline plan-select" data-plan="starter" type="button" aria-pressed="true">Current plan</button>
+            </div>
+
+            <div class="plan-card plan-card--featured">
+              <div class="plan-badge">Popular</div>
+              <div class="plan-top">
+                <span class="plan-name">Pro</span>
+                <div class="plan-price">$29 <span class="plan-period">/ mo</span></div>
+                <p class="plan-desc">For teams building production apps.</p>
+              </div>
+              <ul class="plan-perks">
+                <li>15,000 credits / month</li>
+                <li>All 4 endpoints</li>
+                <li>Priority support</li>
+              </ul>
+              <button class="btn btn-primary plan-select" data-plan="pro" type="button" aria-pressed="false">Select Pro</button>
+            </div>
+
+            <div class="plan-card">
+              <div class="plan-top">
+                <span class="plan-name">Scale</span>
+                <div class="plan-price">$99 <span class="plan-period">/ mo</span></div>
+                <p class="plan-desc">High volume with enterprise support.</p>
+              </div>
+              <ul class="plan-perks">
+                <li>75,000 credits / month</li>
+                <li>All 4 endpoints</li>
+                <li>SLA + dedicated support</li>
+              </ul>
+              <button class="btn btn-outline plan-select" data-plan="scale" type="button" aria-pressed="false">Select Scale</button>
+            </div>
+          </div>
+          <p id="plan-msg" class="plan-msg" aria-live="polite"></p>
+        </div>
       </section>
 
-      <section id="usage" class="panel" aria-labelledby="usage-title">
-        <h2 id="usage-title">Usage simulation</h2>
-        <p class="helper">Use this to test client-side credit deduction before server billing integration.</p>
-        <form id="usage-form" class="stack" novalidate>
-          <label for="usage-amount">Credits to consume</label>
-          <input id="usage-amount" name="usage-amount" type="number" min="1" value="25" required />
-          <button class="btn btn-primary" type="submit">Consume credits</button>
-        </form>
-        <p id="usage-message" class="live-msg" aria-live="polite"></p>
+      <!-- ── Account ────────────────────────────────────── -->
+      <section id="account" class="section" aria-labelledby="account-heading">
+        <div class="container section-narrow">
+          <div class="section-head">
+            <h2 id="account-heading">Get your API key</h2>
+            <p class="section-sub">Sign in or create a free account to start making requests.</p>
+          </div>
 
-        <details>
-          <summary>Firestore/API placeholders</summary>
-          <pre><code id="api-placeholder"></code></pre>
-        </details>
+          <!-- Sign-in / register form -->
+          <div id="auth-gate" class="auth-card">
+            <form id="login-form" class="auth-form" novalidate>
+              <div class="field">
+                <label for="email">Email</label>
+                <input id="email" name="email" type="email" autocomplete="email" inputmode="email" placeholder="you@example.com" required />
+              </div>
+              <div class="field">
+                <label for="password">Password</label>
+                <input id="password" name="password" type="password" autocomplete="current-password" placeholder="••••••••" minlength="6" required />
+              </div>
+              <div class="auth-actions">
+                <button class="btn btn-primary" type="submit">Sign in</button>
+                <button class="btn btn-outline" type="button" id="register-btn">Create account</button>
+              </div>
+            </form>
+            <p id="auth-message" class="auth-msg" aria-live="polite"></p>
+          </div>
+
+          <!-- Dashboard (shown after sign-in) -->
+          <div id="auth-dash" class="auth-card hidden">
+            <div class="dash-header">
+              <p class="dash-email" id="dash-email">—</p>
+              <span class="plan-pill" id="dash-plan">Starter</span>
+            </div>
+            <div class="apikey-block">
+              <span class="apikey-label">Your API key</span>
+              <div class="apikey-row">
+                <code id="apikey-large" class="apikey-code">—</code>
+                <button id="copy-key-btn-dash" class="btn-copy" type="button" aria-label="Copy API key">Copy</button>
+              </div>
+            </div>
+            <div class="dash-stat">
+              <span class="stat-label">Credits remaining</span>
+              <strong id="dash-credits">—</strong>
+            </div>
+            <p class="helper-text">Authenticate with <code>X-API-Key: &lt;your-key&gt;</code> in request headers.</p>
+          </div>
+        </div>
       </section>
+
     </main>
 
-    <nav class="tabbar" aria-label="Bottom navigation">
-      <a class="tab-link is-current" href="#home">Home</a>
-      <a class="tab-link" href="#plans">Plans</a>
-      <a class="tab-link" href="#auth">Account</a>
-      <a class="tab-link" href="#usage">Usage</a>
-    </nav>
+    <footer class="site-footer">
+      <div class="container footer-inner">
+        <span class="footer-brand">WISP</span>
+        <span class="footer-copy">Free, self-hostable web research platform.</span>
+        <nav class="footer-links" aria-label="Footer navigation">
+          <a href="/docs">API Docs</a>
+          <a href="/health">Status</a>
+          <a href="https://github.com/ZSPEC-OOS/wisp" rel="noopener noreferrer">GitHub</a>
+        </nav>
+      </div>
+    </footer>
 
     <script type="module" src="./app.js"></script>
   </body>
