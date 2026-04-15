@@ -103,3 +103,17 @@ curl -s localhost:8000/search \
 - First-class crawl, map, and research workflows
 - Citation spans, uncertainty notes, and execution trace for inspectability
 - Built-in benchmark harness and source-grounding oriented metrics
+
+
+## Vercel Launch Site
+A user-friendly launch site framework is available at `apps/launch-site` with:
+- accessible landing page UX
+- login/register framework
+- Firestore config placeholders
+- subscription usage-credit framework with admin override
+
+Run locally:
+```bash
+cd apps/launch-site
+python -m http.server 4173
+```
