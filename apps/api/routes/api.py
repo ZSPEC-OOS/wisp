@@ -54,12 +54,16 @@ async def search(payload: SearchRequest) -> SearchResponse:
         return SearchResponse(**cached)
 
     with LATENCY.labels(stage="search").time():
-        results = await search_service.search(payload.query, max_results=payload.max_results)
+        results = await search_service.search(payload.query, max_results=payload.max_results, topic=payload.topic)
 
     if payload.allowed_domains:
         results = [r for r in results if r.source_domain in set(payload.allowed_domains)]
     if payload.blocked_domains:
         results = [r for r in results if r.source_domain not in set(payload.blocked_domains)]
+    if payload.start_date:
+        results = [r for r in results if r.retrieved_at.date() >= payload.start_date]
+    if payload.end_date:
+        results = [r for r in results if r.retrieved_at.date() <= payload.end_date]
 
     citations = [
         {"url": str(r.url), "title": r.title, "snippet": r.snippet}
@@ -115,7 +119,14 @@ async def research(payload: ResearchRequest) -> ResearchResponse:
     REQ_COUNTER.labels(endpoint="research").inc()
     try:
         with LATENCY.labels(stage="research").time():
-            out = await research_service.run(payload.query, payload.mode, payload.max_sources)
+            out = await research_service.run(
+                payload.query,
+                payload.mode,
+                payload.max_sources,
+                max_search_rounds=payload.max_search_rounds,
+                allowed_domains=payload.allowed_domains,
+                blocked_domains=payload.blocked_domains,
+            )
         return ResearchResponse(**out)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"research_failed: {exc}") from exc
