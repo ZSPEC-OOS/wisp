@@ -9,11 +9,17 @@ from packages.common.models import SearchResult
 from packages.common.url import domain_of
 
 
+_TOPIC_SITE_FILTERS: dict[str, str] = {
+    "news": "site:reuters.com OR site:bbc.com OR site:apnews.com OR site:theguardian.com",
+    "finance": "site:finance.yahoo.com OR site:bloomberg.com OR site:marketwatch.com OR site:ft.com",
+}
+
+
 class SearchProvider(ABC):
     name: str
 
     @abstractmethod
-    async def search(self, query: str, max_results: int = 10) -> list[SearchResult]:
+    async def search(self, query: str, max_results: int = 10, topic: str = "general") -> list[SearchResult]:
         raise NotImplementedError
 
 
@@ -23,10 +29,12 @@ class DuckDuckGoProvider(SearchProvider):
     def __init__(self, timeout_seconds: int = 12):
         self.timeout_seconds = timeout_seconds
 
-    async def search(self, query: str, max_results: int = 10) -> list[SearchResult]:
+    async def search(self, query: str, max_results: int = 10, topic: str = "general") -> list[SearchResult]:
         # Free DDG instant answer endpoint; related topics are used as web-like hints.
+        site_filter = _TOPIC_SITE_FILTERS.get(topic)
+        effective_query = f"{query} ({site_filter})" if site_filter else query
         url = "https://api.duckduckgo.com/"
-        params = {"q": query, "format": "json", "no_html": 1, "skip_disambig": 1}
+        params = {"q": effective_query, "format": "json", "no_html": 1, "skip_disambig": 1}
         async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=True) as client:
             response = await client.get(url, params=params)
             response.raise_for_status()
