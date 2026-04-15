@@ -1,5 +1,19 @@
 {
   "version": 2,
-  "builds": [{ "src": "main.py", "use": "@vercel/python" }],
-  "routes": [{ "src": "/(.*)", "dest": "main.py" }]
+  "builds": [
+    { "src": "main.py", "use": "@vercel/python" },
+    { "src": "apps/launch-site/**", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/health", "dest": "main.py" },
+    { "src": "/metrics", "dest": "main.py" },
+    { "src": "/search", "dest": "main.py" },
+    { "src": "/extract", "dest": "main.py" },
+    { "src": "/crawl", "dest": "main.py" },
+    { "src": "/map", "dest": "main.py" },
+    { "src": "/research", "dest": "main.py" },
+    { "src": "/docs(.*)", "dest": "main.py" },
+    { "src": "/openapi.json", "dest": "main.py" },
+    { "src": "/(.*)", "dest": "apps/launch-site/$1" }
+  ]
 }
