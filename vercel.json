@@ -1,20 +1,5 @@
 {
-  "cleanUrls": true,
-  "trailingSlash": false,
-  "rewrites": [
-    { "source": "/", "destination": "/apps/launch-site/index.html" },
-    { "source": "/styles.css", "destination": "/apps/launch-site/styles.css" },
-    { "source": "/app.js", "destination": "/apps/launch-site/app.js" },
-    { "source": "/(.*)", "destination": "/apps/launch-site/index.html" }
-  ],
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "X-Frame-Options", "value": "DENY" },
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
-      ]
-    }
-  ]
+  "version": 2,
+  "builds": [{ "src": "main.py", "use": "@vercel/python" }],
+  "routes": [{ "src": "/(.*)", "dest": "main.py" }]
 }
