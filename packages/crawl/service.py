@@ -37,6 +37,22 @@ class CrawlService:
         edges, nodes, failures = [], [], []
 
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            # Seed additional URLs from sitemap.xml
+            sitemap_urls: list[str] = list(rp.site_maps() or [])
+            if not sitemap_urls:
+                sitemap_urls = [urljoin(seed, "/sitemap.xml")]
+            for sitemap_url in sitemap_urls:
+                try:
+                    resp = await client.get(sitemap_url)
+                    if resp.status_code == 200:
+                        soup = BeautifulSoup(resp.text, "lxml-xml")
+                        for loc in soup.find_all("loc"):
+                            loc_url = canonicalize_url(loc.text.strip())
+                            if loc_url and domain_of(loc_url) in allow and loc_url not in visited:
+                                q.append((loc_url, 0))
+                except Exception:
+                    pass
+
             while q and len(visited) < max_pages:
                 url, depth = q.popleft()
                 if url in visited or depth > max_depth:
