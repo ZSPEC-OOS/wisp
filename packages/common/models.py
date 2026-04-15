@@ -23,6 +23,7 @@ class SearchResult(BaseModel):
     retrieved_at: datetime
     trust_score: float = 0.5
     freshness_score: float = 0.5
+    relevance_score: float = 0.0
     # Academic metadata — populated by academic search providers
     doi: str | None = None
     authors: list[str] = Field(default_factory=list)

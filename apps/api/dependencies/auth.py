@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import string
 from collections.abc import Callable
 
 from fastapi import Header, HTTPException, status
@@ -21,6 +22,14 @@ def _parse_api_keys(raw_keys: str) -> set[str]:
 
 def is_auth_enabled() -> bool:
     return bool(settings.api_keys and _parse_api_keys(settings.api_keys))
+
+
+def validate_api_key_format(key: str) -> bool:
+    """Return True if key meets minimum security requirements."""
+    return (
+        len(key) >= 16
+        and all(c in string.printable and c not in string.whitespace for c in key)
+    )
 
 
 def api_key_guard_factory(parse_api_keys: Callable[[str], set[str]] = _parse_api_keys):
@@ -43,9 +52,10 @@ def api_key_guard_factory(parse_api_keys: Callable[[str], set[str]] = _parse_api
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid_or_missing_api_key",
+                headers={"WWW-Authenticate": "ApiKey"},
             )
 
-        logger.info("auth_ok", extra={"key_prefix": key_provided[:4]})
+        logger.info("auth_ok")
 
     return require_api_key
 

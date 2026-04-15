@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, HttpUrl
 
 class SearchRequest(BaseModel):
     query: str = Field(min_length=2)
-    topic: Literal["general", "news", "finance"] = "general"
+    topic: Literal["general", "news", "finance", "academic"] = "general"
     max_results: int = Field(default=8, ge=1, le=20)
     include_answer: bool = True
     include_raw_content: bool = False

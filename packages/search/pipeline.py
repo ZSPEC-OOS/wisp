@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections import OrderedDict
 from datetime import datetime, timezone
 
@@ -8,9 +9,23 @@ from rank_bm25 import BM25Okapi
 
 from packages.common.models import Passage, SearchResult
 from packages.common.url import canonicalize_url
+from packages.ranking.scoring import trust_weight
 from packages.search.providers import DuckDuckGoProvider, SearchProvider
 
-_ACADEMIC_TRUSTED = {"arxiv.org", "openalex.org", "semanticscholar.org", "doi.org"}
+# Optional dense embedding reranker (sentence-transformers)
+_embedder = None
+
+
+def _load_embedder():
+    global _embedder
+    if _embedder is None:
+        try:
+            from sentence_transformers import SentenceTransformer, util as st_util
+            _embedder = SentenceTransformer("all-MiniLM-L6-v2")
+            _embedder._st_util = st_util
+        except ImportError:
+            pass
+    return _embedder
 
 
 def normalize_query(query: str) -> str:
@@ -32,22 +47,39 @@ def dedupe_results(results: list[SearchResult]) -> list[SearchResult]:
     return list(unique.values())
 
 
+def _rank_score(rank: int) -> float:
+    """Log-normalized rank score: 1.0 for rank 1, decaying smoothly."""
+    return 1.0 / (1.0 + math.log(max(rank, 1)))
+
+
+def _citation_boost(citation_count: int | None) -> float:
+    """Smooth log-normalized citation boost in [0, 0.15]."""
+    if citation_count is None or citation_count <= 0:
+        return 0.0
+    return min(0.15, 0.05 * math.log10(citation_count + 1))
+
+
+def _bm25_snippet_scores(query: str, results: list[SearchResult]) -> list[float]:
+    """Score each result's title+snippet against the query using BM25."""
+    if not results:
+        return []
+    corpus = [(r.title + " " + r.snippet).lower().split() for r in results]
+    bm25 = BM25Okapi(corpus)
+    raw_scores = bm25.get_scores(query.lower().split())
+    max_s = max(raw_scores) if max(raw_scores) > 0 else 1.0
+    return [float(s) / max_s for s in raw_scores]
+
+
 def score_result(result: SearchResult) -> SearchResult:
-    trusted_substrings = [".gov", ".edu", "wikipedia.org", "arxiv.org", "reuters.com",
-                          "openalex.org", "semanticscholar.org"]
-    trust = 0.3
-    if any(t in result.source_domain for t in trusted_substrings):
-        trust = 0.9
-    elif result.source_domain.count(".") >= 1:
-        trust = 0.6
-    # Boost trust for highly-cited academic results (capped at 0.95)
-    if result.citation_count and result.citation_count > 50:
-        trust = min(0.95, trust + 0.05)
-    days_old = (datetime.now(timezone.utc) - result.retrieved_at).days
-    # Academic papers don't decay as fast — use 365-day window for dated results
+    trust = trust_weight(result.source_domain)
+    current_year = datetime.now(timezone.utc).year
     if result.publication_year:
-        freshness = max(0.3, 1.0 - (days_old / 365))
+        # Use actual publication year for academic content (10-year decay)
+        years_old = current_year - result.publication_year
+        freshness = max(0.2, 1.0 - (years_old / 10.0))
     else:
+        # For web pages: use retrieved_at as proxy for content freshness
+        days_old = (datetime.now(timezone.utc) - result.retrieved_at).days
         freshness = max(0.1, 1.0 - (days_old / 30))
     result.trust_score = trust
     result.freshness_score = freshness
@@ -80,8 +112,21 @@ class SearchService:
             results = await self.provider.search(query, max_results=max_results, topic=topic)
 
         results = [score_result(r) for r in dedupe_results(results)]
+
+        # BM25 snippet relevance scoring
+        bm25_scores = _bm25_snippet_scores(query, results)
+        for r, bm25_s in zip(results, bm25_scores):
+            r.relevance_score = bm25_s
+
+        # Composite ranking: trust 28%, rank 28%, freshness 18%, relevance 18%, citations 8%
         results.sort(
-            key=lambda r: 0.5 * (1 / r.rank) + 0.3 * r.trust_score + 0.2 * r.freshness_score,
+            key=lambda r: (
+                0.28 * _rank_score(r.rank)
+                + 0.28 * r.trust_score
+                + 0.18 * r.freshness_score
+                + 0.18 * r.relevance_score
+                + 0.08 * _citation_boost(r.citation_count)
+            ),
             reverse=True,
         )
         # Reassign ranks after sort so the exposed rank field is meaningful
@@ -93,11 +138,35 @@ class SearchService:
 def rerank_passages(query: str, passages: list[Passage]) -> list[Passage]:
     if not passages:
         return []
-    corpus = [p.text.split() for p in passages]
+    # Tokenize with lowercase for case-insensitive BM25 matching
+    corpus = [p.text.lower().split() for p in passages]
     bm25 = BM25Okapi(corpus)
-    scores = bm25.get_scores(query.split())
+    query_tokens = query.lower().split()
+    scores = bm25.get_scores(query_tokens)
     rescored = []
     for p, s in zip(passages, scores, strict=False):
         p.score = float(s)
         rescored.append(p)
     return sorted(rescored, key=lambda x: x.score, reverse=True)
+
+
+def _embedding_rerank(query: str, passages: list[Passage]) -> list[Passage]:
+    """Rerank passages using dense embeddings if sentence-transformers is available."""
+    embedder = _load_embedder()
+    if embedder is None or not passages:
+        return passages
+    st_util = embedder._st_util
+    texts = [p.text for p in passages]
+    import asyncio as _asyncio
+    loop = _asyncio.get_event_loop()
+    query_emb = loop.run_in_executor(None, lambda: embedder.encode(query, convert_to_tensor=True))
+    passage_embs = loop.run_in_executor(None, lambda: embedder.encode(texts, convert_to_tensor=True))
+    # Note: for async contexts use await; this is a sync helper called from sync code
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        q_emb = executor.submit(embedder.encode, query, True).result()
+        p_embs = executor.submit(embedder.encode, texts, True).result()
+    scores = st_util.cos_sim(q_emb, p_embs)[0].tolist()
+    for p, s in zip(passages, scores):
+        p.score = float(s)
+    return sorted(passages, key=lambda x: x.score, reverse=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 
 from fastapi import Header, HTTPException, Request, status
@@ -27,6 +28,12 @@ class _Bucket:
             return True
         return False
 
+    def time_to_next_token(self) -> float:
+        """Return seconds until the next token becomes available."""
+        if self.refill_rate <= 0:
+            return 60.0
+        return (1.0 - self.tokens) / self.refill_rate
+
 
 class _TokenBucketLimiter:
     """Per-process in-memory token bucket rate limiter.
@@ -48,11 +55,13 @@ class _TokenBucketLimiter:
 
     async def check(self, key: str) -> None:
         async with self._lock:
-            if not self._get_bucket(key).consume():
+            bucket = self._get_bucket(key)
+            if not bucket.consume():
+                retry_after = str(max(1, math.ceil(bucket.time_to_next_token())))
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail="rate_limit_exceeded",
-                    headers={"Retry-After": "60"},
+                    headers={"Retry-After": retry_after},
                 )
 
 
