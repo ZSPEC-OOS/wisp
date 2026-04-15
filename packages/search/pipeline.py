@@ -45,6 +45,10 @@ class SearchService:
         query = normalize_query(query)
         results = await self.provider.search(query, max_results=max_results)
         results = [score_result(r) for r in dedupe_results(results)]
+        results.sort(
+            key=lambda r: 0.5 * (1 / r.rank) + 0.3 * r.trust_score + 0.2 * r.freshness_score,
+            reverse=True,
+        )
         return results[:max_results]
 
 

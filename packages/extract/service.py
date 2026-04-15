@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 import httpx
@@ -9,6 +10,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from packages.common.models import ExtractedDocument, Passage
 from packages.common.url import canonicalize_url
+
+_EXTRACT_SEMAPHORE = asyncio.Semaphore(5)
 
 
 class ExtractService:
@@ -69,5 +72,13 @@ class ExtractService:
                 diagnostics={"error": str(exc)},
             )
 
+    async def _extract_url_with_semaphore(self, url: str, format: str, include_images: bool) -> ExtractedDocument:
+        async with _EXTRACT_SEMAPHORE:
+            return await self.extract_url(url, format=format, include_images=include_images)
+
     async def extract_many(self, urls: list[str], format: str = "markdown", include_images: bool = False) -> list[ExtractedDocument]:
-        return [await self.extract_url(url, format=format, include_images=include_images) for url in urls]
+        return list(
+            await asyncio.gather(
+                *[self._extract_url_with_semaphore(url, format=format, include_images=include_images) for url in urls]
+            )
+        )
