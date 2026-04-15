@@ -6,7 +6,8 @@ import json
 from packages.common.models import Citation, Passage, SearchResult
 from packages.extract.service import ExtractService
 from packages.search.enrichers import UnpaywallResolver
-from packages.search.pipeline import SearchService, rerank_passages
+from apps.api.config import settings
+from packages.search.pipeline import SearchService, _embedding_rerank, rerank_passages
 
 
 def _derive_followup_query(original_query: str, passages: list[Passage]) -> str | None:
@@ -128,7 +129,10 @@ class ResearchService:
             if d.status == "ok":
                 passages.extend(d.passages[:5])
                 citations.append(Citation(url=d.url, title=d.title, snippet=(d.passages[0].text[:200] if d.passages else "")))
-        ranked = rerank_passages(query, passages)[:8]
+        ranked = (
+            _embedding_rerank(query, passages) if settings.enable_embeddings
+            else rerank_passages(query, passages)
+        )[:8]
 
         final_answer, executive_summary, detailed_report = _build_output(mode, ranked, citations)
         answer_lines = [p.text for p in ranked[:3]]

@@ -10,6 +10,9 @@ class APIError(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+    version: str = "1.0.0"
+    cache_size: int = 0
+    cache_max_size: int = 0
 
 
 class SearchResponse(BaseModel):

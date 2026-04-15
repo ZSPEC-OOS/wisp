@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter as _Counter
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from starlette.responses import RedirectResponse, Response
@@ -16,16 +18,37 @@ public_router = APIRouter()
 protected_router = APIRouter(dependencies=[Depends(require_api_key), Depends(require_rate_limit)])
 
 REQ_COUNTER = Counter("wisp_requests_total", "Total API requests", ["endpoint"])
-LATENCY = Histogram("wisp_stage_latency_seconds", "Stage latency", ["stage"])
+LATENCY = Histogram(
+    "wisp_stage_latency_seconds",
+    "Stage latency",
+    ["stage"],
+    buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, float("inf")],
+)
 EXTRACTION_FAILURES = Counter("wisp_extraction_failures_total", "Extraction failures")
 CACHE_HITS = Counter("wisp_cache_hits_total", "Cache hits", ["endpoint"])
 CACHE_MISSES = Counter("wisp_cache_misses_total", "Cache misses", ["endpoint"])
 ERRORS = Counter("wisp_errors_total", "Errors by endpoint and type", ["endpoint", "error_type"])
+SEARCH_PROVIDER_RESULTS = Counter(
+    "wisp_search_provider_results_total",
+    "Search results returned per provider",
+    ["provider"],
+)
+CRAWL_FAILURES = Counter(
+    "wisp_crawl_failures_total",
+    "URLs that failed during a crawl",
+    ["reason"],
+)
 
 
 @public_router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    return HealthResponse(status="ok")
+    stats = cache.stats()
+    return HealthResponse(
+        status="ok",
+        version="1.0.0",
+        cache_size=stats["size"],
+        cache_max_size=stats["max_size"],
+    )
 
 
 @public_router.get("/metrics")
@@ -72,6 +95,11 @@ async def search(payload: SearchRequest) -> SearchResponse:
     with LATENCY.labels(stage="search").time():
         results = await search_service.search(payload.query, max_results=payload.max_results, topic=payload.topic)
 
+    # Emit per-provider metrics
+    provider_counts = _Counter(r.provider for r in results)
+    for provider, count in provider_counts.items():
+        SEARCH_PROVIDER_RESULTS.labels(provider=provider).inc(count)
+
     if payload.allowed_domains:
         results = [r for r in results if r.source_domain in set(payload.allowed_domains)]
     if payload.blocked_domains:
@@ -112,14 +140,32 @@ async def search(payload: SearchRequest) -> SearchResponse:
 @protected_router.post("/crawl", response_model=CrawlResponse)
 async def crawl(payload: CrawlRequest) -> CrawlResponse:
     REQ_COUNTER.labels(endpoint="crawl").inc()
+    key = (
+        f"crawl:{payload.seed_url}:{payload.max_pages}:{payload.max_depth}"
+        f":{','.join(sorted(payload.allowed_domains or []))}"
+    )
+    cached = cache.get(key)
+    if cached:
+        CACHE_HITS.labels(endpoint="crawl").inc()
+        return CrawlResponse(**cached)
+    CACHE_MISSES.labels(endpoint="crawl").inc()
+
     with LATENCY.labels(stage="crawl").time():
         out = await crawl_service.crawl(
             seed_url=str(payload.seed_url),
             max_pages=payload.max_pages,
             max_depth=payload.max_depth,
             allowed_domains=payload.allowed_domains,
+            timeout_seconds=payload.timeout_seconds,
         )
-    return CrawlResponse(**out)
+
+    for failure in out.get("failures", []):
+        reason = failure.get("error", "unknown")[:64]
+        CRAWL_FAILURES.labels(reason=reason).inc()
+
+    body = CrawlResponse(**out)
+    cache.set(key, out, ttl=300)
+    return body
 
 
 @protected_router.post("/map", response_model=MapResponse)
