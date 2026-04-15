@@ -6,6 +6,14 @@ from datetime import datetime, timezone
 # Set by RequestIDMiddleware for each inbound request; propagates to all log lines.
 _request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("request_id", default=None)
 
+# Built-in LogRecord attributes that should not be treated as user-supplied extras
+_BUILTIN_ATTRS = frozenset({
+    "args", "created", "exc_info", "exc_text", "filename", "funcName",
+    "levelname", "levelno", "lineno", "message", "module", "msecs",
+    "msg", "name", "pathname", "process", "processName", "relativeCreated",
+    "stack_info", "thread", "threadName", "taskName",
+})
+
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -18,8 +26,12 @@ class JsonFormatter(logging.Formatter):
         request_id = _request_id_var.get()
         if request_id:
             payload["request_id"] = request_id
-        if hasattr(record, "extra"):
-            payload["extra"] = getattr(record, "extra")
+        # Collect all non-standard LogRecord attributes as structured extras.
+        # Python's logging merges extra={...} kwargs directly onto the LogRecord
+        # as top-level attributes, not under a single "extra" key.
+        extras = {k: v for k, v in record.__dict__.items() if k not in _BUILTIN_ATTRS}
+        if extras:
+            payload["extra"] = extras
         return json.dumps(payload)
 
 
