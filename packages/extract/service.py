@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 from datetime import datetime
 
 import httpx
@@ -12,6 +13,23 @@ from packages.common.models import ExtractedDocument, Passage
 from packages.common.url import canonicalize_url
 
 _EXTRACT_SEMAPHORE = asyncio.Semaphore(5)
+
+try:
+    import pypdf  # optional — add pypdf to dependencies for PDF support
+    _PYPDF_AVAILABLE = True
+except ImportError:
+    _PYPDF_AVAILABLE = False
+
+
+def _extract_pdf_text(raw_bytes: bytes) -> str:
+    """Extract plain text from a PDF byte payload using pypdf."""
+    reader = pypdf.PdfReader(io.BytesIO(raw_bytes))
+    parts = []
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        if text.strip():
+            parts.append(text.strip())
+    return "\n\n".join(parts)
 
 
 class ExtractService:
@@ -29,37 +47,62 @@ class ExtractService:
             async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=headers, follow_redirects=True) as client:
                 response = await self._fetch(client, url)
             content_type = response.headers.get("content-type", "")
-            body = response.text
-            md = trafilatura.extract(
-                body,
-                output_format="markdown" if format == "markdown" else "txt",
-                include_images=include_images,
-                include_comments=False,
-                include_tables=True,
-            )
-            if not md:
-                soup = BeautifulSoup(body, "lxml")
-                md = soup.get_text("\n", strip=True)
+            is_pdf = "application/pdf" in content_type or url.lower().endswith(".pdf")
+
+            if is_pdf and _PYPDF_AVAILABLE:
+                md = _extract_pdf_text(response.content)
+            elif is_pdf:
+                # pypdf not installed — fall back to the arXiv abstract page if possible
+                if "arxiv.org/pdf" in url:
+                    url = url.replace("/pdf/", "/abs/").removesuffix(".pdf")
+                    async with httpx.AsyncClient(
+                        timeout=self.timeout_seconds, headers=headers, follow_redirects=True
+                    ) as client2:
+                        response = await self._fetch(client2, url)
+                body = response.text
+                md = trafilatura.extract(body, output_format="markdown" if format == "markdown" else "txt",
+                                         include_images=include_images, include_comments=False, include_tables=True)
+                if not md:
+                    soup = BeautifulSoup(body, "lxml")
+                    md = soup.get_text("\n", strip=True)
+            else:
+                body = response.text
+                md = trafilatura.extract(
+                    body,
+                    output_format="markdown" if format == "markdown" else "txt",
+                    include_images=include_images,
+                    include_comments=False,
+                    include_tables=True,
+                )
+                if not md:
+                    soup = BeautifulSoup(body, "lxml")
+                    md = soup.get_text("\n", strip=True)
             passages = [
                 Passage(text=p.strip(), source_url=response.url)
-                for p in md.split("\n\n")
+                for p in (md or "").split("\n\n")
                 if len(p.strip()) > 40
             ][:20]
-            title = trafilatura.extract_metadata(body).title if trafilatura.extract_metadata(body) else None
+            # Metadata extraction only applies to HTML content
+            html_body = response.text if not is_pdf else None
+            meta = trafilatura.extract_metadata(html_body) if html_body else None
+            title = meta.title if meta else None
             published = None
-            if trafilatura.extract_metadata(body) and trafilatura.extract_metadata(body).date:
-                published = datetime.fromisoformat(trafilatura.extract_metadata(body).date)
+            if meta and meta.date:
+                try:
+                    published = datetime.fromisoformat(meta.date)
+                except ValueError:
+                    pass
             return ExtractedDocument(
                 url=url,
                 canonical_url=canonicalize_url(str(response.url)),
                 title=title,
-                author=trafilatura.extract_metadata(body).author if trafilatura.extract_metadata(body) else None,
+                author=meta.author if meta else None,
                 published_at=published,
                 status="ok",
                 format="markdown" if format == "markdown" else "text",
-                content=md,
+                content=md or "",
                 passages=passages,
-                diagnostics={"content_type": content_type, "length": len(body)},
+                diagnostics={"content_type": content_type, "length": len(response.content), "pdf": is_pdf},
             )
         except Exception as exc:
             return ExtractedDocument(

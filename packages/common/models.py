@@ -23,6 +23,12 @@ class SearchResult(BaseModel):
     retrieved_at: datetime
     trust_score: float = 0.5
     freshness_score: float = 0.5
+    # Academic metadata — populated by academic search providers
+    doi: str | None = None
+    authors: list[str] = Field(default_factory=list)
+    citation_count: int | None = None
+    publication_year: int | None = None
+    oa_pdf_url: str | None = None  # Open-access PDF URL when available
 
 
 class Passage(BaseModel):
