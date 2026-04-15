@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 900
     enable_embeddings: bool = False
     log_level: str = "INFO"
+    api_keys: str = ""
 
 
 settings = Settings()
