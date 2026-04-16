@@ -15,6 +15,14 @@ from packages.search.providers import DuckDuckGoProvider, SearchProvider
 # Optional dense embedding reranker (sentence-transformers)
 _embedder = None
 
+# Topic-aware ranking weight presets
+_TOPIC_WEIGHTS: dict[str, dict[str, float]] = {
+    "academic": {"rank": 0.20, "trust": 0.35, "freshness": 0.10, "relevance": 0.20, "citation": 0.15},
+    "news":     {"rank": 0.20, "trust": 0.25, "freshness": 0.40, "relevance": 0.15, "citation": 0.00},
+    "finance":  {"rank": 0.20, "trust": 0.30, "freshness": 0.35, "relevance": 0.15, "citation": 0.00},
+    "general":  {"rank": 0.28, "trust": 0.28, "freshness": 0.18, "relevance": 0.18, "citation": 0.08},
+}
+
 
 def _load_embedder():
     global _embedder
@@ -59,13 +67,25 @@ def _citation_boost(citation_count: int | None) -> float:
     return min(0.15, 0.05 * math.log10(citation_count + 1))
 
 
+def _stem(token: str) -> str:
+    """Minimal suffix-stripping stemmer — improves BM25 recall without new deps."""
+    for suffix in ("ing", "tion", "ations", "ness", "ment", "ed", "er", "ly", "s"):
+        if token.endswith(suffix) and len(token) - len(suffix) >= 3:
+            return token[: -len(suffix)]
+    return token
+
+
+def _tokenize(text: str) -> list[str]:
+    return [_stem(w) for w in text.lower().split()]
+
+
 def _bm25_snippet_scores(query: str, results: list[SearchResult]) -> list[float]:
     """Score each result's title+snippet against the query using BM25."""
     if not results:
         return []
-    corpus = [(r.title + " " + r.snippet).lower().split() for r in results]
+    corpus = [_tokenize(r.title + " " + r.snippet) for r in results]
     bm25 = BM25Okapi(corpus)
-    raw_scores = bm25.get_scores(query.lower().split())
+    raw_scores = bm25.get_scores(_tokenize(query))
     max_s = max(raw_scores) if max(raw_scores) > 0 else 1.0
     return [float(s) / max_s for s in raw_scores]
 
@@ -118,14 +138,15 @@ class SearchService:
         for r, bm25_s in zip(results, bm25_scores):
             r.relevance_score = bm25_s
 
-        # Composite ranking: trust 28%, rank 28%, freshness 18%, relevance 18%, citations 8%
+        # Topic-aware composite ranking
+        w = _TOPIC_WEIGHTS.get(topic, _TOPIC_WEIGHTS["general"])
         results.sort(
             key=lambda r: (
-                0.28 * _rank_score(r.rank)
-                + 0.28 * r.trust_score
-                + 0.18 * r.freshness_score
-                + 0.18 * r.relevance_score
-                + 0.08 * _citation_boost(r.citation_count)
+                w["rank"] * _rank_score(r.rank)
+                + w["trust"] * r.trust_score
+                + w["freshness"] * r.freshness_score
+                + w["relevance"] * r.relevance_score
+                + w["citation"] * _citation_boost(r.citation_count)
             ),
             reverse=True,
         )
@@ -138,11 +159,9 @@ class SearchService:
 def rerank_passages(query: str, passages: list[Passage]) -> list[Passage]:
     if not passages:
         return []
-    # Tokenize with lowercase for case-insensitive BM25 matching
-    corpus = [p.text.lower().split() for p in passages]
+    corpus = [_tokenize(p.text) for p in passages]
     bm25 = BM25Okapi(corpus)
-    query_tokens = query.lower().split()
-    scores = bm25.get_scores(query_tokens)
+    scores = bm25.get_scores(_tokenize(query))
     rescored = []
     for p, s in zip(passages, scores, strict=False):
         p.score = float(s)
@@ -152,21 +171,19 @@ def rerank_passages(query: str, passages: list[Passage]) -> list[Passage]:
 
 def _embedding_rerank(query: str, passages: list[Passage]) -> list[Passage]:
     """Rerank passages using dense embeddings if sentence-transformers is available."""
-    embedder = _load_embedder()
-    if embedder is None or not passages:
-        return passages
-    st_util = embedder._st_util
-    texts = [p.text for p in passages]
-    import asyncio as _asyncio
-    loop = _asyncio.get_event_loop()
-    query_emb = loop.run_in_executor(None, lambda: embedder.encode(query, convert_to_tensor=True))
-    passage_embs = loop.run_in_executor(None, lambda: embedder.encode(texts, convert_to_tensor=True))
-    # Note: for async contexts use await; this is a sync helper called from sync code
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        q_emb = executor.submit(embedder.encode, query, True).result()
-        p_embs = executor.submit(embedder.encode, texts, True).result()
-    scores = st_util.cos_sim(q_emb, p_embs)[0].tolist()
-    for p, s in zip(passages, scores):
-        p.score = float(s)
-    return sorted(passages, key=lambda x: x.score, reverse=True)
+    try:
+        embedder = _load_embedder()
+        if embedder is None or not passages:
+            return rerank_passages(query, passages)
+        st_util = embedder._st_util
+        texts = [p.text for p in passages]
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            q_emb = executor.submit(embedder.encode, query, True).result()
+            p_embs = executor.submit(embedder.encode, texts, True).result()
+        scores = st_util.cos_sim(q_emb, p_embs)[0].tolist()
+        for p, s in zip(passages, scores):
+            p.score = float(s)
+        return sorted(passages, key=lambda x: x.score, reverse=True)
+    except Exception:
+        return rerank_passages(query, passages)
