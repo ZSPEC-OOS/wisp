@@ -6,6 +6,7 @@ from packages.research.service import ResearchService
 from packages.search.academic_providers import ArxivProvider, OpenAlexProvider, SemanticScholarProvider
 from packages.search.enrichers import UnpaywallResolver
 from packages.search.pipeline import SearchService
+from packages.search.providers import DuckDuckGoProvider, SearXNGProvider
 from packages.storage.cache import TTLCache
 
 extract_service = ExtractService(user_agent=settings.user_agent, timeout_seconds=settings.http_timeout)
@@ -21,7 +22,12 @@ _academic_providers = [
     ),
 ]
 
-search_service = SearchService(academic_providers=_academic_providers)
+_web_provider = (
+    SearXNGProvider(base_url=settings.searxng_url)
+    if settings.searxng_url
+    else DuckDuckGoProvider()
+)
+search_service = SearchService(provider=_web_provider, academic_providers=_academic_providers)
 
 # Unpaywall resolver — only active when an email is configured (required by ToS)
 _unpaywall = UnpaywallResolver(email=settings.academic_mailto) if settings.academic_mailto else None

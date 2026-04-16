@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     academic_mailto: str = ""        # Polite-pool email for OpenAlex + CrossRef + Unpaywall
     s2_api_key: str = ""             # Optional Semantic Scholar key (higher rate limits)
     academic_max_results: int = 4    # Results per academic provider
+    searxng_url: str = ""            # e.g. "http://localhost:8080" — self-hosted SearXNG instance
 
 
 settings = Settings()
