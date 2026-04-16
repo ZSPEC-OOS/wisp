@@ -48,30 +48,27 @@ class CrawlService:
             sitemap_urls: list[str] = list(rp.site_maps() or [])
             if not sitemap_urls:
                 sitemap_urls = [urljoin(seed, "/sitemap.xml")]
+
             for sitemap_url in sitemap_urls:
                 try:
                     resp = await client.get(sitemap_url)
                     if resp.status_code == 200:
                         soup = BeautifulSoup(resp.text, "lxml-xml")
                         if soup.find("sitemapindex"):
-                            # Recurse one level into child sitemaps
-                            child_sitemap_locs = [loc.text.strip() for loc in soup.find_all("loc")]
-                            
-                            async def _fetch_child_sitemap(child_url: str) -> list[str]:
+                            # Fetch child sitemaps in parallel
+                            child_locs = [loc.text.strip() for loc in soup.find_all("loc")]
+
+                            async def _fetch_child(child_url: str) -> list[str]:
                                 try:
                                     child_resp = await client.get(child_url)
                                     if child_resp.status_code == 200:
-                                        child_soup = BeautifulSoup(child_resp.text, "lxml-xml")
-                                        return [
-                                            canonicalize_url(loc.text.strip()) for loc in child_soup.find_all("loc")
-                                        ]
+                                        cs = BeautifulSoup(child_resp.text, "lxml-xml")
+                                        return [canonicalize_url(loc.text.strip()) for loc in cs.find_all("loc")]
                                 except Exception:
                                     pass
                                 return []
 
-                            child_results = await asyncio.gather(
-                                *[_fetch_child_sitemap(u) for u in child_sitemap_locs[:5]]
-                            )
+                            child_results = await asyncio.gather(*[_fetch_child(u) for u in child_locs[:5]])
                             for urls in child_results:
                                 for loc_url in urls:
                                     if loc_url and domain_of(loc_url) in allow and loc_url not in visited:
@@ -98,9 +95,9 @@ class CrawlService:
                 async with sem:
                     try:
                         r = await client.get(url, headers={"User-Agent": self.extractor.user_agent})
+                        # Skip non-HTML content
                         ct = r.headers.get("content-type", "")
                         if not any(t in ct for t in ("text/html", "application/xhtml")):
-                            # Not HTML — record as skipped, don't parse links
                             nodes.append({"url": url, "title": None, "depth": depth, "skipped": True})
                             return
                         soup = BeautifulSoup(r.text, "lxml")

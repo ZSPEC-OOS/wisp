@@ -47,15 +47,14 @@ class _TokenBucketLimiter:
         self._buckets: dict[str, _Bucket] = {}
         self._lock = asyncio.Lock()
 
-    def _get_bucket(self, key: str) -> _Bucket:
+    def _get_bucket(self, key: str, rpm: int) -> _Bucket:
         if key not in self._buckets:
-            rpm = settings.rate_limit_per_minute
             self._buckets[key] = _Bucket(capacity=float(rpm), refill_rate=rpm / 60.0)
         return self._buckets[key]
 
-    async def check(self, key: str) -> None:
+    async def check(self, key: str, rpm: int) -> None:
         async with self._lock:
-            bucket = self._get_bucket(key)
+            bucket = self._get_bucket(key, rpm)
             if not bucket.consume():
                 retry_after = str(max(1, math.ceil(bucket.time_to_next_token())))
                 raise HTTPException(
@@ -76,4 +75,21 @@ async def require_rate_limit(
     if not settings.rate_limit_per_minute:
         return
     key = x_api_key or (request.client.host if request.client else "anonymous")
-    await _limiter.check(key)
+    await _limiter.check(key, settings.rate_limit_per_minute)
+
+
+def make_rate_limit_dep(endpoint_rpm_getter):
+    """Factory for per-endpoint rate limit dependencies.
+
+    endpoint_rpm_getter: callable returning the RPM for this endpoint (0 = use global).
+    """
+    async def dep(
+        request: Request,
+        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    ) -> None:
+        rpm = endpoint_rpm_getter() or settings.rate_limit_per_minute
+        if not rpm:
+            return
+        key = f"{x_api_key or (request.client.host if request.client else 'anonymous')}:{request.url.path}"
+        await _limiter.check(key, rpm)
+    return dep

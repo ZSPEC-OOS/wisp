@@ -3,11 +3,12 @@ from __future__ import annotations
 from collections import Counter as _Counter
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from starlette.responses import RedirectResponse, Response
 
+from apps.api.config import settings
 from apps.api.dependencies.auth import require_api_key
-from apps.api.dependencies.rate_limit import require_rate_limit
+from apps.api.dependencies.rate_limit import make_rate_limit_dep, require_rate_limit
 from apps.api.dependencies.services import cache, crawl_service, extract_service, map_service, research_service, search_service
 from apps.api.schemas.requests import CrawlRequest, ExtractRequest, MapRequest, ResearchRequest, SearchRequest
 from apps.api.schemas.responses import CrawlResponse, ExtractResponse, HealthResponse, MapResponse, ResearchResponse, SearchResponse
@@ -38,6 +39,12 @@ CRAWL_FAILURES = Counter(
     "URLs that failed during a crawl",
     ["reason"],
 )
+CACHE_SIZE = Gauge("wisp_cache_size", "Current number of items in the TTL cache")
+CACHE_HIT_RATE = Gauge("wisp_cache_hit_rate", "Rolling cache hit rate [0-1]")
+
+# Per-endpoint rate limit dependencies for heavier operations
+_research_rate_limit = make_rate_limit_dep(lambda: settings.research_rate_limit_per_minute)
+_crawl_rate_limit = make_rate_limit_dep(lambda: settings.crawl_rate_limit_per_minute)
 
 
 @public_router.get("/health", response_model=HealthResponse)
@@ -68,16 +75,20 @@ async def extract(payload: ExtractRequest) -> ExtractResponse:
 
     with LATENCY.labels(stage="extract").time():
         docs = await extract_service.extract_many([str(u) for u in payload.urls], payload.format, payload.include_images)
+
+    success_count = 0
     for doc in docs:
-        if doc.status != "ok":
+        if doc.status == "ok":
+            success_count += 1
+        else:
             EXTRACTION_FAILURES.inc()
             ERRORS.labels(endpoint="extract", error_type="extraction_failure").inc()
-    successes = [d for d in docs if d.status == "ok"]
-    failures_list = [d for d in docs if d.status != "ok"]
+    failure_count = len(docs) - success_count
+
     body = ExtractResponse(
         documents=[d.model_dump(mode="json") for d in docs],
-        success_count=len(successes),
-        failure_count=len(failures_list),
+        success_count=success_count,
+        failure_count=failure_count,
     )
     cache.set(key, body.model_dump(mode="json"), ttl=3600)
     return body
@@ -121,17 +132,19 @@ async def search(payload: SearchRequest) -> SearchResponse:
     ]
     quick_answer = None
     extracted = None
-    warnings = None
+    warnings: list[str] = []
 
     if payload.include_answer and results:
         docs = await extract_service.extract_many([str(r.url) for r in results[:3]], format="text")
         passages = []
         for doc in docs:
-            passages.extend(doc.passages[:4])
+            if doc.status != "ok":
+                warnings.append(f"Extraction failed for {doc.url}: {doc.status}")
+                EXTRACTION_FAILURES.inc()
+            else:
+                passages.extend(doc.passages[:4])
         ranked = rerank_passages(payload.query, passages)
         quick_answer = "\n\n".join([p.text for p in ranked[:2]]) if ranked else "No grounded answer available."
-        failed_urls = [d.url for d in docs if d.status != "ok"]
-        warnings = [f"extraction_failed: {u}" for u in failed_urls] or None
         if payload.include_raw_content:
             extracted = [d.model_dump(mode="json") for d in docs]
 
@@ -141,13 +154,13 @@ async def search(payload: SearchRequest) -> SearchResponse:
         quick_answer=quick_answer,
         citations=citations,
         extracted=extracted,
-        warnings=warnings,
+        warnings=warnings or None,
     )
     cache.set(key, body.model_dump(mode="json"))
     return body
 
 
-@protected_router.post("/crawl", response_model=CrawlResponse)
+@protected_router.post("/crawl", response_model=CrawlResponse, dependencies=[Depends(_crawl_rate_limit)])
 async def crawl(payload: CrawlRequest) -> CrawlResponse:
     REQ_COUNTER.labels(endpoint="crawl").inc()
     key = (
@@ -165,9 +178,9 @@ async def crawl(payload: CrawlRequest) -> CrawlResponse:
             seed_url=str(payload.seed_url),
             max_pages=payload.max_pages,
             max_depth=payload.max_depth,
-            concurrency=payload.concurrency,
             allowed_domains=payload.allowed_domains,
             timeout_seconds=payload.timeout_seconds,
+            concurrency=payload.concurrency,
         )
 
     for failure in out.get("failures", []):
@@ -187,7 +200,7 @@ async def site_map(payload: MapRequest) -> MapResponse:
     return MapResponse(**out)
 
 
-@protected_router.post("/research", response_model=ResearchResponse)
+@protected_router.post("/research", response_model=ResearchResponse, dependencies=[Depends(_research_rate_limit)])
 async def research(payload: ResearchRequest) -> ResearchResponse:
     REQ_COUNTER.labels(endpoint="research").inc()
     key = (

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
+import time
 from datetime import datetime
 
 import httpx
@@ -13,6 +15,7 @@ from packages.common.models import ExtractedDocument, Passage
 from packages.common.url import canonicalize_url
 
 _EXTRACT_SEMAPHORE = asyncio.Semaphore(5)
+_logger = logging.getLogger("wisp.extract")
 
 try:
     import pypdf  # optional — add pypdf to dependencies for PDF support
@@ -33,6 +36,7 @@ def _extract_pdf_text(raw_bytes: bytes) -> str:
 
 
 def _dedup_passages(passages: list[Passage]) -> list[Passage]:
+    """Remove near-duplicate passages where one is a substring of another."""
     seen: list[str] = []
     out = []
     for p in passages:
@@ -53,6 +57,7 @@ class ExtractService:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=4))
     async def _fetch(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
         response = await client.get(url)
+        # Treat transient server errors as retryable
         if response.status_code in {429, 503}:
             raise httpx.HTTPStatusError(
                 f"retryable status {response.status_code}",
@@ -63,6 +68,7 @@ class ExtractService:
 
     async def extract_url(self, url: str, format: str = "markdown", include_images: bool = False) -> ExtractedDocument:
         headers = {"User-Agent": self.user_agent}
+        t0 = time.perf_counter()
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=headers, follow_redirects=True) as client:
                 response = await self._fetch(client, url)
@@ -97,12 +103,14 @@ class ExtractService:
                 if not md:
                     soup = BeautifulSoup(body, "lxml")
                     md = soup.get_text("\n", strip=True)
-            passages = [
+
+            raw_passages = [
                 Passage(text=p.strip(), source_url=response.url)
                 for p in (md or "").split("\n\n")
                 if len(p.strip()) > 40
             ]
-            passages = _dedup_passages(passages)[:20]
+            passages = _dedup_passages(raw_passages)[:20]
+
             # Metadata extraction only applies to HTML content
             html_body = response.text if not is_pdf else None
             meta = trafilatura.extract_metadata(html_body) if html_body else None
@@ -113,6 +121,18 @@ class ExtractService:
                     published = datetime.fromisoformat(meta.date)
                 except ValueError:
                     pass
+
+            _logger.debug(
+                "extracted",
+                extra={
+                    "url": url,
+                    "status": "ok",
+                    "passages": len(passages),
+                    "content_length": len(response.content),
+                    "duration_ms": round((time.perf_counter() - t0) * 1000, 1),
+                    "is_pdf": is_pdf,
+                },
+            )
             return ExtractedDocument(
                 url=url,
                 canonical_url=canonicalize_url(str(response.url)),
@@ -126,6 +146,10 @@ class ExtractService:
                 diagnostics={"content_type": content_type, "length": len(response.content), "pdf": is_pdf},
             )
         except Exception as exc:
+            _logger.warning(
+                "extract_failed",
+                extra={"url": url, "error": str(exc), "duration_ms": round((time.perf_counter() - t0) * 1000, 1)},
+            )
             return ExtractedDocument(
                 url=url,
                 canonical_url=canonicalize_url(url),
