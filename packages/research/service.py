@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 
 from packages.common.models import Citation, Passage, SearchResult
 from packages.extract.service import ExtractService
@@ -10,7 +12,7 @@ from packages.search.pipeline import SearchService, _embedding_rerank, rerank_pa
 
 
 def _derive_followup_query(original_query: str, passages: list[Passage]) -> str | None:
-    """Derive follow-up terms using simple term frequency across top passages."""
+    """Pick high-frequency terms from the top-5 passages to extend the query."""
     if not passages:
         return None
     query_words = {w.lower().strip(".,!?;:\"'()[]") for w in original_query.split()}
@@ -26,8 +28,10 @@ def _derive_followup_query(original_query: str, passages: list[Passage]) -> str 
     return f"{original_query} {' '.join(top_terms)}"
 
 
-def _build_output(mode: str, ranked: list[Passage], citations: list[Citation]) -> tuple[str, str, str, dict | None]:
-    """Return (final_answer, executive_summary, detailed_report, structured_answer) for the given mode."""
+def _build_output(
+    mode: str, ranked: list[Passage], citations: list[Citation]
+) -> tuple[str, str, str, dict | None]:
+    """Return (final_answer, executive_summary, detailed_report, structured_answer)."""
     no_evidence = "Insufficient evidence from retrievable sources."
     if not ranked:
         return no_evidence, no_evidence, no_evidence, None
@@ -48,12 +52,12 @@ def _build_output(mode: str, ranked: list[Passage], citations: list[Citation]) -
 
     # structured
     mid = len(ranked) // 2
-    structured = {
+    structured: dict = {
         "background": ranked[0].text if ranked else "",
-        "findings": [p.text for p in ranked[1:mid + 1]],
-        "gaps": [p.text for p in ranked[mid + 1:]] or ["No additional gaps identified."],
+        "findings": [p.text for p in ranked[1 : mid + 1]],
+        "gaps": [p.text for p in ranked[mid + 1 :]] or ["No additional gaps identified."],
     }
-    return top1, top1, top3, structured
+    return json.dumps(structured), top1, top3, structured
 
 
 class ResearchService:
@@ -76,29 +80,49 @@ class ResearchService:
         allowed_domains: list[str] | None = None,
         blocked_domains: list[str] | None = None,
     ) -> dict:
+        t0 = time.perf_counter()
+
         # Round 1: seed queries from AND-clause splitting
         queries: list[str] = [query]
         if " and " in query.lower():
             queries.extend([q.strip() for q in query.split(" and ") if q.strip()])
 
-        all_results = []
+        all_results: list[SearchResult] = []
         executed_queries: list[str] = []
 
         for q in queries:
             executed_queries.append(q)
             all_results.extend(await self.search.search(q, max_results=max_sources))
 
+        t_search = time.perf_counter()
+
+        # Prefetch extraction of top round-1 results so HTTP requests are in flight
+        # while subsequent search rounds execute (genuine async overlap)
+        _prefetch_top3_urls = [
+            str(r.url)
+            for r in list({str(r.url): r for r in all_results}.values())[:3]
+        ]
+        _prefetch_task: asyncio.Task | None = (
+            asyncio.create_task(self.extract.extract_many(_prefetch_top3_urls))
+            if max_search_rounds > 1
+            else None
+        )
+
         # Additional rounds: derive follow-up queries from top-ranked passages so far
-        extract_task: asyncio.Task | None = None
-        if max_search_rounds > 1:
-            unique_so_far = list({str(r.url): r for r in all_results}.values())[:max_sources]
-            extract_task = asyncio.create_task(
-                self.extract.extract_many([str(r.url) for r in unique_so_far[:3]])
-            )
         for _round in range(1, max_search_rounds):
-            if extract_task is None:
-                break
-            quick_docs = await extract_task
+            unique_so_far = list({str(r.url): r for r in all_results}.values())[:max_sources]
+            top3_urls = [str(r.url) for r in unique_so_far[:3]]
+
+            # Reuse prefetch task if URLs are unchanged, else cancel and re-extract
+            if _prefetch_task is not None and top3_urls == _prefetch_top3_urls:
+                quick_docs = await _prefetch_task
+                _prefetch_task = None
+            else:
+                if _prefetch_task is not None:
+                    _prefetch_task.cancel()
+                    _prefetch_task = None
+                quick_docs = await self.extract.extract_many(top3_urls)
+
             quick_passages: list[Passage] = []
             for d in quick_docs:
                 if d.status == "ok":
@@ -108,15 +132,11 @@ class ResearchService:
             if not followup or followup in executed_queries:
                 break
             executed_queries.append(followup)
-            search_task = asyncio.create_task(
-                self.search.search(followup, max_results=max_sources)
-            )
-            next_unique = list({str(r.url): r for r in all_results}.values())[:max_sources]
-            extract_task = asyncio.create_task(
-                self.extract.extract_many([str(r.url) for r in next_unique[3:6]])
-            )
-            new_results = await search_task
-            all_results.extend(new_results)
+            all_results.extend(await self.search.search(followup, max_results=max_sources))
+
+        # Cancel any unused prefetch task
+        if _prefetch_task is not None:
+            _prefetch_task.cancel()
 
         # Apply domain filters
         if allowed_domains:
@@ -131,54 +151,73 @@ class ResearchService:
 
         # Resolve OA PDF URLs via Unpaywall for academic results that have a DOI
         if self.unpaywall:
-            top = list(
-                await asyncio.gather(*[self.unpaywall.enrich(r) for r in top])
-            )
+            top = list(await asyncio.gather(*[self.unpaywall.enrich(r) for r in top]))
 
         # Prefer OA PDF URL for extraction when available
         extract_urls = [r.oa_pdf_url or str(r.url) for r in top]
         docs = await self.extract.extract_many(extract_urls)
+
+        t_extract = time.perf_counter()
 
         passages: list[Passage] = []
         citations: list[Citation] = []
         for d in docs:
             if d.status == "ok":
                 passages.extend(d.passages[:5])
-                citations.append(Citation(url=d.url, title=d.title, snippet=(d.passages[0].text[:200] if d.passages else "")))
+                citations.append(
+                    Citation(
+                        url=d.url,
+                        title=d.title,
+                        snippet=(d.passages[0].text[:200] if d.passages else ""),
+                    )
+                )
         ranked = (
             _embedding_rerank(query, passages) if settings.enable_embeddings
             else rerank_passages(query, passages)
         )[:8]
 
-        final_answer, executive_summary, detailed_report, structured_answer = _build_output(mode, ranked, citations)
+        t_rerank = time.perf_counter()
+
+        final_answer, executive_summary, detailed_report, structured_answer = _build_output(
+            mode, ranked, citations
+        )
         answer_lines = [p.text for p in ranked[:3]]
-        # Compute confidence: source diversity × average trust
-        if citations:
-            provider_diversity = len({str(r.provider) for r in top}) / max(1, len(top))
-            avg_trust = sum(r.trust_score for r in top) / len(top)
-            confidence_score = round(min(1.0, provider_diversity * avg_trust * (len(citations) / max_sources)), 3)
+
+        # Confidence score: provider diversity × average trust score
+        if top:
+            provider_diversity = len({r.provider for r in top}) / len(top)
+            avg_trust = sum(getattr(r, "trust_score", 0.5) for r in top) / len(top)
+            confidence_score = round(min(1.0, provider_diversity * avg_trust * 2), 4)
         else:
             confidence_score = 0.0
 
-        if confidence_score < 0.3:
-            uncertainty = "Low confidence: insufficient or low-quality sources."
-        elif confidence_score < 0.6:
-            uncertainty = "Moderate confidence: some sources may be stale or incomplete."
-        else:
-            uncertainty = "Good confidence: multiple diverse sources retrieved."
+        uncertainty = (
+            "Evidence is limited."
+            if len(citations) < 2
+            else "Some sources may be stale or incomplete."
+        )
         return {
             "final_answer": final_answer,
             "executive_summary": executive_summary,
             "detailed_report": detailed_report,
             "structured_answer": structured_answer,
-            "sources": [c.model_dump() for c in citations],
-            "citation_spans": [{"claim": a[:120], "source_url": str(r.source_url)} for a, r in zip(answer_lines, ranked, strict=False)],
-            "uncertainty_notes": uncertainty,
             "confidence_score": confidence_score,
+            "sources": [c.model_dump() for c in citations],
+            "citation_spans": [
+                {"claim": a[:120], "source_url": str(r.source_url)}
+                for a, r in zip(answer_lines, ranked, strict=False)
+            ],
+            "uncertainty_notes": uncertainty,
             "research_trace": {
                 "queries": executed_queries,
                 "sources_considered": len(top),
                 "documents_extracted": len([d for d in docs if d.status == "ok"]),
+                "timing_ms": {
+                    "search_ms": round((t_search - t0) * 1000),
+                    "extract_ms": round((t_extract - t_search) * 1000),
+                    "rerank_ms": round((t_rerank - t_extract) * 1000),
+                    "total_ms": round((t_rerank - t0) * 1000),
+                },
             },
             "mode": mode,
         }

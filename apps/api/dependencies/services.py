@@ -22,11 +22,13 @@ _academic_providers = [
     ),
 ]
 
+# Use SearXNG when configured, otherwise fall back to DuckDuckGo
 _web_provider = (
     SearXNGProvider(base_url=settings.searxng_url)
     if settings.searxng_url
     else DuckDuckGoProvider()
 )
+
 search_service = SearchService(provider=_web_provider, academic_providers=_academic_providers)
 
 # Unpaywall resolver — only active when an email is configured (required by ToS)

@@ -11,21 +11,25 @@ from fastapi import Header, HTTPException, status
 from apps.api.config import settings
 
 logger = logging.getLogger("wisp.auth")
+
+# Failed-auth lockout: track timestamps of failures per identifier
 _failed_attempts: dict[str, list[float]] = {}
-
-
-def _is_locked_out(identifier: str) -> bool:
-    now = time.monotonic()
-    recent = [ts for ts in _failed_attempts.get(identifier, []) if now - ts <= 60]
-    _failed_attempts[identifier] = recent
-    return len(recent) >= 5
+_LOCKOUT_WINDOW = 60.0   # seconds
+_LOCKOUT_THRESHOLD = 5   # failures within window → 429
 
 
 def _record_failure(identifier: str) -> None:
     now = time.monotonic()
-    attempts = [ts for ts in _failed_attempts.get(identifier, []) if now - ts <= 60]
+    attempts = _failed_attempts.setdefault(identifier, [])
     attempts.append(now)
-    _failed_attempts[identifier] = attempts
+    # Prune old entries
+    _failed_attempts[identifier] = [t for t in attempts if now - t < _LOCKOUT_WINDOW]
+
+
+def _is_locked_out(identifier: str) -> bool:
+    now = time.monotonic()
+    recent = [t for t in _failed_attempts.get(identifier, []) if now - t < _LOCKOUT_WINDOW]
+    return len(recent) >= _LOCKOUT_THRESHOLD
 
 
 def _normalize_key(key: str) -> str:
@@ -46,6 +50,7 @@ def validate_api_key_format(key: str) -> bool:
         return False
     if not all(c in string.printable and c not in string.whitespace for c in key):
         return False
+    # Require at least 2 distinct character classes for basic entropy
     has_upper = any(c.isupper() for c in key)
     has_lower = any(c.islower() for c in key)
     has_digit = any(c.isdigit() for c in key)

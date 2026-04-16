@@ -39,18 +39,18 @@ class DuckDuckGoProvider(SearchProvider):
         return response.json()
 
     async def search(self, query: str, max_results: int = 10, topic: str = "general") -> list[SearchResult]:
-        # Free DDG instant answer endpoint; related topics are used as web-like hints.
         site_filter = _TOPIC_SITE_FILTERS.get(topic)
         effective_query = f"{query} ({site_filter})" if site_filter else query
         url = "https://api.duckduckgo.com/"
         params = {"q": effective_query, "format": "json", "no_html": 1, "skip_disambig": 1}
+
+        rows = []
         async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=True) as client:
             try:
                 data = await self._call_api(client, url, params)
             except Exception:
                 data = {}
 
-        rows = []
         topics = data.get("RelatedTopics", [])
         flat = []
         for t in topics:
@@ -111,12 +111,14 @@ class DuckDuckGoProvider(SearchProvider):
                         )
                     )
             except Exception:
-                pass  # Best-effort; return empty list rather than crash
+                pass
 
         return rows
 
 
 class SearXNGProvider(SearchProvider):
+    """Self-hosted SearXNG instance — aggregates many engines, no API key needed."""
+
     name = "searxng"
 
     def __init__(self, base_url: str, timeout_seconds: int = 12):
@@ -139,15 +141,13 @@ class SearXNGProvider(SearchProvider):
             url = item.get("url", "")
             if not url:
                 continue
-            results.append(
-                SearchResult(
-                    title=item.get("title", url),
-                    url=url,
-                    snippet=item.get("content", "")[:300],
-                    source_domain=domain_of(url),
-                    rank=i,
-                    provider=self.name,
-                    retrieved_at=datetime.now(timezone.utc),
-                )
-            )
+            results.append(SearchResult(
+                title=item.get("title", url),
+                url=url,
+                snippet=(item.get("content") or "")[:300],
+                source_domain=domain_of(url),
+                rank=i,
+                provider=self.name,
+                retrieved_at=datetime.now(timezone.utc),
+            ))
         return results

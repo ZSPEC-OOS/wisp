@@ -15,11 +15,12 @@ from packages.search.providers import DuckDuckGoProvider, SearchProvider
 # Optional dense embedding reranker (sentence-transformers)
 _embedder = None
 
+# Topic-aware ranking weight presets
 _TOPIC_WEIGHTS: dict[str, dict[str, float]] = {
     "academic": {"rank": 0.20, "trust": 0.35, "freshness": 0.10, "relevance": 0.20, "citation": 0.15},
-    "news": {"rank": 0.20, "trust": 0.25, "freshness": 0.40, "relevance": 0.15, "citation": 0.00},
-    "finance": {"rank": 0.20, "trust": 0.30, "freshness": 0.35, "relevance": 0.15, "citation": 0.00},
-    "general": {"rank": 0.28, "trust": 0.28, "freshness": 0.18, "relevance": 0.18, "citation": 0.08},
+    "news":     {"rank": 0.20, "trust": 0.25, "freshness": 0.40, "relevance": 0.15, "citation": 0.00},
+    "finance":  {"rank": 0.20, "trust": 0.30, "freshness": 0.35, "relevance": 0.15, "citation": 0.00},
+    "general":  {"rank": 0.28, "trust": 0.28, "freshness": 0.18, "relevance": 0.18, "citation": 0.08},
 }
 
 
@@ -137,7 +138,7 @@ class SearchService:
         for r, bm25_s in zip(results, bm25_scores):
             r.relevance_score = bm25_s
 
-        # Topic-aware composite ranking profile.
+        # Topic-aware composite ranking profile
         w = _TOPIC_WEIGHTS.get(topic, _TOPIC_WEIGHTS["general"])
         results.sort(
             key=lambda r: (
@@ -158,7 +159,7 @@ class SearchService:
 def rerank_passages(query: str, passages: list[Passage]) -> list[Passage]:
     if not passages:
         return []
-    # Tokenize with lightweight stemming for higher recall.
+    # Tokenize with lightweight stemming for higher recall
     corpus = [_tokenize(p.text) for p in passages]
     bm25 = BM25Okapi(corpus)
     query_tokens = _tokenize(query)
@@ -174,21 +175,19 @@ def rerank_passages(query: str, passages: list[Passage]) -> list[Passage]:
 
 def _embedding_rerank(query: str, passages: list[Passage]) -> list[Passage]:
     """Rerank passages using dense embeddings if sentence-transformers is available."""
-    embedder = _load_embedder()
-    if embedder is None or not passages:
-        return passages
-    st_util = embedder._st_util
-    texts = [p.text for p in passages]
-    import asyncio as _asyncio
-    loop = _asyncio.get_event_loop()
-    query_emb = loop.run_in_executor(None, lambda: embedder.encode(query, convert_to_tensor=True))
-    passage_embs = loop.run_in_executor(None, lambda: embedder.encode(texts, convert_to_tensor=True))
-    # Note: for async contexts use await; this is a sync helper called from sync code
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        q_emb = executor.submit(embedder.encode, query, True).result()
-        p_embs = executor.submit(embedder.encode, texts, True).result()
-    scores = st_util.cos_sim(q_emb, p_embs)[0].tolist()
-    for p, s in zip(passages, scores):
-        p.score = float(s)
-    return sorted(passages, key=lambda x: x.score, reverse=True)
+    try:
+        embedder = _load_embedder()
+        if embedder is None or not passages:
+            return rerank_passages(query, passages)
+        st_util = embedder._st_util
+        texts = [p.text for p in passages]
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            q_emb = executor.submit(embedder.encode, query, True).result()
+            p_embs = executor.submit(embedder.encode, texts, True).result()
+        scores = st_util.cos_sim(q_emb, p_embs)[0].tolist()
+        for p, s in zip(passages, scores):
+            p.score = float(s)
+        return sorted(passages, key=lambda x: x.score, reverse=True)
+    except Exception:
+        return rerank_passages(query, passages)

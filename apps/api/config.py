@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
@@ -17,6 +19,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     api_keys: str = ""
     rate_limit_per_minute: int = 0  # 0 = disabled; set to e.g. 60 to enforce per-key limits
+    research_rate_limit_per_minute: int = 0  # override for /research (0 = use global)
+    crawl_rate_limit_per_minute: int = 0     # override for /crawl (0 = use global)
     # Academic open-access pipeline
     academic_mailto: str = ""        # Polite-pool email for OpenAlex + CrossRef + Unpaywall
     s2_api_key: str = ""             # Optional Semantic Scholar key (higher rate limits)
