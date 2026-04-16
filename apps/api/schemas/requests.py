@@ -49,3 +49,7 @@ class ResearchRequest(BaseModel):
     max_sources: int = Field(default=6, ge=1, le=20)
     allowed_domains: list[str] | None = None
     blocked_domains: list[str] | None = None
+    # never  → always use native extractive path
+    # auto   → gating policy decides based on evidence profile
+    # always → call LLM if enabled and available, fall back to native on failure
+    synthesis_mode: Literal["never", "auto", "always"] = "auto"

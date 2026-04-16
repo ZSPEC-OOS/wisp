@@ -42,6 +42,37 @@ CRAWL_FAILURES = Counter(
 CACHE_SIZE = Gauge("wisp_cache_size", "Current number of items in the TTL cache")
 CACHE_HIT_RATE = Gauge("wisp_cache_hit_rate", "Rolling cache hit rate [0-1]")
 
+# LLM synthesis observability
+LLM_GATE = Counter(
+    "wisp_llm_gate_total",
+    "Gate decisions for LLM synthesis",
+    ["decision", "reason"],
+)
+LLM_CALLS = Counter(
+    "wisp_llm_calls_total",
+    "LLM synthesis call outcomes",
+    ["status"],
+)
+LLM_LATENCY = Histogram(
+    "wisp_llm_latency_seconds",
+    "LLM synthesis latency",
+    ["mode"],
+    buckets=[0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 12.0, 20.0, float("inf")],
+)
+LLM_EVIDENCE_COUNT = Histogram(
+    "wisp_llm_prompt_evidence_count",
+    "Number of evidence chunks sent to LLM",
+    buckets=[1, 2, 3, 4, 5, 6, 7, 8, 10, float("inf")],
+)
+LLM_USED_RATIO = Gauge("wisp_llm_used_ratio", "Cumulative ratio of /research requests using LLM")
+LLM_TIMEOUT_REMAINING = Gauge(
+    "wisp_llm_timeout_budget_remaining_seconds",
+    "Remaining timeout budget after the most recent LLM call",
+)
+
+_llm_req_total = 0
+_llm_req_used  = 0
+
 # Per-endpoint rate limit dependencies for heavier operations
 _research_rate_limit = make_rate_limit_dep(lambda: settings.research_rate_limit_per_minute)
 _crawl_rate_limit = make_rate_limit_dep(lambda: settings.crawl_rate_limit_per_minute)
@@ -202,9 +233,14 @@ async def site_map(payload: MapRequest) -> MapResponse:
 
 @protected_router.post("/research", response_model=ResearchResponse, dependencies=[Depends(_research_rate_limit)])
 async def research(payload: ResearchRequest) -> ResearchResponse:
+    global _llm_req_total, _llm_req_used
+
     REQ_COUNTER.labels(endpoint="research").inc()
+    # synthesis_mode is included in the cache key — a never/auto/always result
+    # is not interchangeable for the same query+mode combination.
     key = (
         f"research:{payload.query}:{payload.mode}:{payload.max_sources}:{payload.max_search_rounds}"
+        f":{payload.synthesis_mode}"
         f":{','.join(sorted(payload.allowed_domains or []))}"
         f":{','.join(sorted(payload.blocked_domains or []))}"
     )
@@ -223,7 +259,39 @@ async def research(payload: ResearchRequest) -> ResearchResponse:
                 max_search_rounds=payload.max_search_rounds,
                 allowed_domains=payload.allowed_domains,
                 blocked_domains=payload.blocked_domains,
+                synthesis_mode=payload.synthesis_mode,
             )
+
+        # Emit LLM observability metrics from trace metadata
+        trace = out.get("research_trace", {})
+        llm_meta = trace.get("llm", {})
+
+        gate_decision = "yes" if llm_meta.get("llm_invoked") else "no"
+        gate_reason   = llm_meta.get("gate_reason", "unknown")
+        LLM_GATE.labels(decision=gate_decision, reason=gate_reason).inc()
+
+        if llm_meta.get("llm_invoked"):
+            status = (
+                "timeout"     if llm_meta.get("timeout_triggered") else
+                "parse_error" if llm_meta.get("parse_failure")     else
+                "fallback"    if llm_meta.get("fallback_triggered") else
+                "success"
+            )
+            LLM_CALLS.labels(status=status).inc()
+            llm_ms = llm_meta.get("llm_latency_ms", 0)
+            LLM_LATENCY.labels(mode=payload.mode).observe(llm_ms / 1000)
+            ev_count = llm_meta.get("evidence_count_sent", 0)
+            if ev_count:
+                LLM_EVIDENCE_COUNT.observe(ev_count)
+            remaining = llm_meta.get("timeout_budget_remaining_seconds")
+            if remaining is not None:
+                LLM_TIMEOUT_REMAINING.set(remaining)
+
+        _llm_req_total += 1
+        if llm_meta.get("llm_invoked") and not llm_meta.get("fallback_triggered"):
+            _llm_req_used += 1
+        LLM_USED_RATIO.set(_llm_req_used / _llm_req_total)
+
         body = ResearchResponse(**out)
         cache.set(key, body.model_dump(mode="json"))
         return body
