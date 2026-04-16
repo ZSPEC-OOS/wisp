@@ -2,10 +2,10 @@
 // Find these in the Firebase Console → Project Settings → Your apps → SDK setup.
 // These values are safe to commit — Firebase security is enforced by Security Rules.
 export const firebaseConfig = {
-  apiKey:            'REPLACE_WITH_FIREBASE_API_KEY',
-  authDomain:        'REPLACE_WITH_FIREBASE_AUTH_DOMAIN',
-  projectId:         'REPLACE_WITH_FIREBASE_PROJECT_ID',
-  storageBucket:     'REPLACE_WITH_FIREBASE_STORAGE_BUCKET',
-  messagingSenderId: 'REPLACE_WITH_FIREBASE_MESSAGING_SENDER_ID',
-  appId:             'REPLACE_WITH_FIREBASE_APP_ID',
+  apiKey:            'AIzaSyAm1mtD6jQ7wUBpxmBSpAeVk5fOqTy_G0c',
+  authDomain:        'wisp-a544c.firebaseapp.com',
+  projectId:         'wisp-a544c',
+  storageBucket:     'wisp-a544c.firebasestorage.app',
+  messagingSenderId: '7762461792',
+  appId:             '1:7762461792:web:402c5b986c0d8bf811af05',
 };
