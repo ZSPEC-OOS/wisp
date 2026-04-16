@@ -151,7 +151,7 @@ async def search(payload: SearchRequest) -> SearchResponse:
 async def crawl(payload: CrawlRequest) -> CrawlResponse:
     REQ_COUNTER.labels(endpoint="crawl").inc()
     key = (
-        f"crawl:{payload.seed_url}:{payload.max_pages}:{payload.max_depth}"
+        f"crawl:{payload.seed_url}:{payload.max_pages}:{payload.max_depth}:{payload.concurrency}"
         f":{','.join(sorted(payload.allowed_domains or []))}"
     )
     cached = cache.get(key)
@@ -165,6 +165,7 @@ async def crawl(payload: CrawlRequest) -> CrawlResponse:
             seed_url=str(payload.seed_url),
             max_pages=payload.max_pages,
             max_depth=payload.max_depth,
+            concurrency=payload.concurrency,
             allowed_domains=payload.allowed_domains,
             timeout_seconds=payload.timeout_seconds,
         )

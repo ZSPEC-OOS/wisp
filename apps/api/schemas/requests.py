@@ -30,6 +30,7 @@ class CrawlRequest(BaseModel):
     instructions: str | None = None
     max_pages: int = Field(default=20, ge=1, le=500)
     max_depth: int = Field(default=2, ge=0, le=6)
+    concurrency: int = Field(default=5, ge=1, le=20)
     allowed_domains: list[str] | None = None
     timeout_seconds: int = Field(default=10, ge=2, le=60)
 
