@@ -27,6 +27,41 @@ class Settings(BaseSettings):
     academic_max_results: int = 4    # Results per academic provider
     searxng_url: str = ""            # e.g. "http://localhost:8080" — self-hosted SearXNG instance
 
+    # ── Optional LLM synthesis (Qwen3-8B or any OpenAI-compatible endpoint) ──
+    # Global off switch — all LLM paths are no-ops when False
+    llm_enabled: bool = False
+
+    # Inference endpoint
+    llm_base_url: str  = "http://localhost:8001/v1"
+    llm_api_key:  str  = "dev-token"
+    llm_model:    str  = "Qwen/Qwen3-8B"
+
+    # Latency budgets — per-mode overrides take precedence over llm_timeout_seconds.
+    # Defaults are conservative; tighten after measuring p95 on target hardware.
+    llm_timeout_seconds:            float = 8.0
+    llm_timeout_concise_seconds:    float = 5.0
+    llm_timeout_report_seconds:     float = 12.0
+    llm_timeout_structured_seconds: float = 10.0
+
+    # Scope and quality
+    llm_max_context_evidence: int   = 6
+    llm_temperature:          float = 0.2
+    llm_max_tokens:           int   = 900
+
+    # Thinking mode: off by default for bounded synthesis (reduces latency
+    # and JSON instability against the hard timeout budget)
+    llm_enable_thinking: bool = False
+
+    # Default gate mode: auto | never | always
+    llm_synthesis_mode_default: str = "auto"
+
+    # Gate thresholds — exposed as config for empirical tuning; never hardcode
+    llm_gate_clear_winner_margin:        float = 0.12
+    llm_gate_clear_winner_ratio:         float = 1.25
+    llm_gate_min_confidence:             float = 0.40
+    llm_gate_report_min_confidence:      float = 0.45
+    llm_gate_synthesis_intent_threshold: float = 0.10
+
 
 def _load_settings() -> Settings:
     settings_obj = Settings()
