@@ -10,18 +10,20 @@ from packages.search.pipeline import SearchService, _embedding_rerank, rerank_pa
 
 
 def _derive_followup_query(original_query: str, passages: list[Passage]) -> str | None:
-    """Extract terms from the top passage that aren't in the original query to form a follow-up."""
+    """Derive follow-up terms using simple term frequency across top passages."""
     if not passages:
         return None
-    query_words = {w.lower() for w in original_query.split()}
-    new_terms = [
-        w.strip(".,!?;:\"'()[]")
-        for w in passages[0].text.split()
-        if len(w) > 4 and w.lower().strip(".,!?;:\"'()[]") not in query_words
-    ]
-    if not new_terms:
+    query_words = {w.lower().strip(".,!?;:\"'()[]") for w in original_query.split()}
+    freq: dict[str, int] = {}
+    for p in passages[:5]:
+        for w in p.text.split():
+            clean = w.lower().strip(".,!?;:\"'()[]")
+            if len(clean) > 4 and clean not in query_words:
+                freq[clean] = freq.get(clean, 0) + 1
+    if not freq:
         return None
-    return f"{original_query} {' '.join(new_terms[:3])}"
+    top_terms = sorted(freq, key=freq.__getitem__, reverse=True)[:3]
+    return f"{original_query} {' '.join(top_terms)}"
 
 
 def _build_output(mode: str, ranked: list[Passage], citations: list[Citation]) -> tuple[str, str, str, dict | None]:
@@ -87,9 +89,16 @@ class ResearchService:
             all_results.extend(await self.search.search(q, max_results=max_sources))
 
         # Additional rounds: derive follow-up queries from top-ranked passages so far
-        for _round in range(1, max_search_rounds):
+        extract_task: asyncio.Task | None = None
+        if max_search_rounds > 1:
             unique_so_far = list({str(r.url): r for r in all_results}.values())[:max_sources]
-            quick_docs = await self.extract.extract_many([str(r.url) for r in unique_so_far[:3]])
+            extract_task = asyncio.create_task(
+                self.extract.extract_many([str(r.url) for r in unique_so_far[:3]])
+            )
+        for _round in range(1, max_search_rounds):
+            if extract_task is None:
+                break
+            quick_docs = await extract_task
             quick_passages: list[Passage] = []
             for d in quick_docs:
                 if d.status == "ok":
@@ -99,7 +108,15 @@ class ResearchService:
             if not followup or followup in executed_queries:
                 break
             executed_queries.append(followup)
-            all_results.extend(await self.search.search(followup, max_results=max_sources))
+            search_task = asyncio.create_task(
+                self.search.search(followup, max_results=max_sources)
+            )
+            next_unique = list({str(r.url): r for r in all_results}.values())[:max_sources]
+            extract_task = asyncio.create_task(
+                self.extract.extract_many([str(r.url) for r in next_unique[3:6]])
+            )
+            new_results = await search_task
+            all_results.extend(new_results)
 
         # Apply domain filters
         if allowed_domains:
