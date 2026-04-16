@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>WISP — Web Research API</title>
     <meta name="description" content="Search, extract, crawl, and synthesize the open web. Free and self-hostable." />
+    <link rel="icon" type="image/png" href="/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="shortcut icon" href="/apple-touch-icon.png" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -12,7 +15,9 @@
 
     <header class="site-header">
       <div class="header-inner">
-        <a class="logo" href="#home">WISP</a>
+        <a class="logo" href="#home" aria-label="WISP home">
+          <img src="/wisplogo.png" alt="WISP" class="logo-image" />
+        </a>
         <nav class="site-nav" aria-label="Site navigation">
           <a href="#features" class="hide-mobile">Features</a>
           <a href="#plans">Pricing</a>

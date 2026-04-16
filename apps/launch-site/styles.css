@@ -114,16 +114,16 @@ img, svg { display: block; max-width: 100%; }
 }
 
 .logo {
-  font-size: 1.15rem;
-  font-weight: 800;
-  letter-spacing: -0.04em;
   text-decoration: none;
-  background: linear-gradient(130deg, var(--accent-light) 0%, #c4b5fd 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
   flex-shrink: 0;
   margin-right: auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.logo-image {
+  height: 28px;
+  width: auto;
 }
 
 .site-nav {
