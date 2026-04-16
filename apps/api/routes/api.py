@@ -72,7 +72,13 @@ async def extract(payload: ExtractRequest) -> ExtractResponse:
         if doc.status != "ok":
             EXTRACTION_FAILURES.inc()
             ERRORS.labels(endpoint="extract", error_type="extraction_failure").inc()
-    body = ExtractResponse(documents=[d.model_dump(mode="json") for d in docs])
+    successes = [d for d in docs if d.status == "ok"]
+    failures_list = [d for d in docs if d.status != "ok"]
+    body = ExtractResponse(
+        documents=[d.model_dump(mode="json") for d in docs],
+        success_count=len(successes),
+        failure_count=len(failures_list),
+    )
     cache.set(key, body.model_dump(mode="json"), ttl=3600)
     return body
 
@@ -115,6 +121,7 @@ async def search(payload: SearchRequest) -> SearchResponse:
     ]
     quick_answer = None
     extracted = None
+    warnings = None
 
     if payload.include_answer and results:
         docs = await extract_service.extract_many([str(r.url) for r in results[:3]], format="text")
@@ -123,6 +130,8 @@ async def search(payload: SearchRequest) -> SearchResponse:
             passages.extend(doc.passages[:4])
         ranked = rerank_passages(payload.query, passages)
         quick_answer = "\n\n".join([p.text for p in ranked[:2]]) if ranked else "No grounded answer available."
+        failed_urls = [d.url for d in docs if d.status != "ok"]
+        warnings = [f"extraction_failed: {u}" for u in failed_urls] or None
         if payload.include_raw_content:
             extracted = [d.model_dump(mode="json") for d in docs]
 
@@ -132,6 +141,7 @@ async def search(payload: SearchRequest) -> SearchResponse:
         quick_answer=quick_answer,
         citations=citations,
         extracted=extracted,
+        warnings=warnings,
     )
     cache.set(key, body.model_dump(mode="json"))
     return body

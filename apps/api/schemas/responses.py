@@ -21,10 +21,13 @@ class SearchResponse(BaseModel):
     quick_answer: str | None = None
     citations: list[dict]
     extracted: list[dict] | None = None
+    warnings: list[str] | None = None
 
 
 class ExtractResponse(BaseModel):
     documents: list[dict]
+    success_count: int = 0
+    failure_count: int = 0
 
 
 class CrawlResponse(BaseModel):
@@ -46,8 +49,10 @@ class ResearchResponse(BaseModel):
     final_answer: str
     executive_summary: str
     detailed_report: str
+    structured_answer: dict | None = None
     sources: list[dict]
     citation_spans: list[dict]
     uncertainty_notes: str
+    confidence_score: float = 0.0
     research_trace: dict
     mode: str

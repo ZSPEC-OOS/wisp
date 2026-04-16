@@ -19,6 +19,7 @@ app = FastAPI(title="WISP API", version="1.0.0", description="Free, self-hostabl
 
 _access_logger = logging.getLogger("wisp.access")
 _startup_logger = logging.getLogger("wisp.startup")
+_MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MB
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -65,9 +66,21 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
             _request_id_var.reset(token)
 
 
+class MaxBodySizeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > _MAX_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"error": "request_too_large", "detail": f"Body exceeds {_MAX_BODY_BYTES} bytes"},
+            )
+        return await call_next(request)
+
+
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(AccessLogMiddleware)
 app.add_middleware(RequestIDMiddleware)
+app.add_middleware(MaxBodySizeMiddleware)
 
 # Public infrastructure endpoints at root (no version prefix)
 app.include_router(public_router)

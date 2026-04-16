@@ -32,6 +32,19 @@ def _extract_pdf_text(raw_bytes: bytes) -> str:
     return "\n\n".join(parts)
 
 
+def _dedup_passages(passages: list[Passage]) -> list[Passage]:
+    seen: list[str] = []
+    out = []
+    for p in passages:
+        text = p.text.strip()
+        # Skip if text is a substring of any already-kept passage, or vice-versa
+        if any(text in s or s in text for s in seen):
+            continue
+        seen.append(text)
+        out.append(p)
+    return out
+
+
 class ExtractService:
     def __init__(self, user_agent: str, timeout_seconds: int = 12):
         self.user_agent = user_agent
@@ -39,7 +52,14 @@ class ExtractService:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=4))
     async def _fetch(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
-        return await client.get(url)
+        response = await client.get(url)
+        if response.status_code in {429, 503}:
+            raise httpx.HTTPStatusError(
+                f"retryable status {response.status_code}",
+                request=response.request,
+                response=response,
+            )
+        return response
 
     async def extract_url(self, url: str, format: str = "markdown", include_images: bool = False) -> ExtractedDocument:
         headers = {"User-Agent": self.user_agent}
@@ -81,7 +101,8 @@ class ExtractService:
                 Passage(text=p.strip(), source_url=response.url)
                 for p in (md or "").split("\n\n")
                 if len(p.strip()) > 40
-            ][:20]
+            ]
+            passages = _dedup_passages(passages)[:20]
             # Metadata extraction only applies to HTML content
             html_body = response.text if not is_pdf else None
             meta = trafilatura.extract_metadata(html_body) if html_body else None

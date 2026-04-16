@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 from packages.common.models import Citation, Passage, SearchResult
 from packages.extract.service import ExtractService
@@ -25,17 +24,17 @@ def _derive_followup_query(original_query: str, passages: list[Passage]) -> str 
     return f"{original_query} {' '.join(new_terms[:3])}"
 
 
-def _build_output(mode: str, ranked: list[Passage], citations: list[Citation]) -> tuple[str, str, str]:
-    """Return (final_answer, executive_summary, detailed_report) for the given mode."""
+def _build_output(mode: str, ranked: list[Passage], citations: list[Citation]) -> tuple[str, str, str, dict | None]:
+    """Return (final_answer, executive_summary, detailed_report, structured_answer) for the given mode."""
     no_evidence = "Insufficient evidence from retrievable sources."
     if not ranked:
-        return no_evidence, no_evidence, no_evidence
+        return no_evidence, no_evidence, no_evidence, None
 
     top1 = ranked[0].text
     top3 = "\n\n".join(p.text for p in ranked[:3])
 
     if mode == "concise":
-        return top1, top1, top1
+        return top1, top1, top1, None
 
     if mode == "report":
         sections = []
@@ -43,7 +42,7 @@ def _build_output(mode: str, ranked: list[Passage], citations: list[Citation]) -
             source = citations[i].title if i < len(citations) else f"Source {i + 1}"
             sections.append(f"### {source}\n\n{p.text}")
         detailed = "\n\n".join(sections)
-        return top3, top1, detailed
+        return top3, top1, detailed, None
 
     # structured
     mid = len(ranked) // 2
@@ -52,7 +51,7 @@ def _build_output(mode: str, ranked: list[Passage], citations: list[Citation]) -
         "findings": [p.text for p in ranked[1:mid + 1]],
         "gaps": [p.text for p in ranked[mid + 1:]] or ["No additional gaps identified."],
     }
-    return json.dumps(structured), top1, top3
+    return top1, top1, top3, structured
 
 
 class ResearchService:
@@ -134,16 +133,31 @@ class ResearchService:
             else rerank_passages(query, passages)
         )[:8]
 
-        final_answer, executive_summary, detailed_report = _build_output(mode, ranked, citations)
+        final_answer, executive_summary, detailed_report, structured_answer = _build_output(mode, ranked, citations)
         answer_lines = [p.text for p in ranked[:3]]
-        uncertainty = "Evidence is limited." if len(citations) < 2 else "Some sources may be stale or incomplete."
+        # Compute confidence: source diversity × average trust
+        if citations:
+            provider_diversity = len({str(r.provider) for r in top}) / max(1, len(top))
+            avg_trust = sum(r.trust_score for r in top) / len(top)
+            confidence_score = round(min(1.0, provider_diversity * avg_trust * (len(citations) / max_sources)), 3)
+        else:
+            confidence_score = 0.0
+
+        if confidence_score < 0.3:
+            uncertainty = "Low confidence: insufficient or low-quality sources."
+        elif confidence_score < 0.6:
+            uncertainty = "Moderate confidence: some sources may be stale or incomplete."
+        else:
+            uncertainty = "Good confidence: multiple diverse sources retrieved."
         return {
             "final_answer": final_answer,
             "executive_summary": executive_summary,
             "detailed_report": detailed_report,
+            "structured_answer": structured_answer,
             "sources": [c.model_dump() for c in citations],
             "citation_spans": [{"claim": a[:120], "source_url": str(r.source_url)} for a, r in zip(answer_lines, ranked, strict=False)],
             "uncertainty_notes": uncertainty,
+            "confidence_score": confidence_score,
             "research_trace": {
                 "queries": executed_queries,
                 "sources_considered": len(top),
