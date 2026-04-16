@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import httpx
 from bs4 import BeautifulSoup
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from packages.common.models import SearchResult
 from packages.common.url import domain_of
@@ -31,18 +32,25 @@ class DuckDuckGoProvider(SearchProvider):
     def __init__(self, timeout_seconds: int = 12):
         self.timeout_seconds = timeout_seconds
 
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=0.5, max=3))
+    async def _call_api(self, client: httpx.AsyncClient, url: str, params: dict) -> dict:
+        response = await client.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
+
     async def search(self, query: str, max_results: int = 10, topic: str = "general") -> list[SearchResult]:
-        # Free DDG instant answer endpoint; related topics are used as web-like hints.
         site_filter = _TOPIC_SITE_FILTERS.get(topic)
         effective_query = f"{query} ({site_filter})" if site_filter else query
         url = "https://api.duckduckgo.com/"
         params = {"q": effective_query, "format": "json", "no_html": 1, "skip_disambig": 1}
-        async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=True) as client:
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
 
         rows = []
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=True) as client:
+            try:
+                data = await self._call_api(client, url, params)
+            except Exception:
+                data = {}
+
         topics = data.get("RelatedTopics", [])
         flat = []
         for t in topics:
@@ -103,6 +111,43 @@ class DuckDuckGoProvider(SearchProvider):
                         )
                     )
             except Exception:
-                pass  # Best-effort; return empty list rather than crash
+                pass
 
         return rows
+
+
+class SearXNGProvider(SearchProvider):
+    """Self-hosted SearXNG instance — aggregates many engines, no API key needed."""
+
+    name = "searxng"
+
+    def __init__(self, base_url: str, timeout_seconds: int = 12):
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+
+    async def search(self, query: str, max_results: int = 10, topic: str = "general") -> list[SearchResult]:
+        category = {"news": "news", "academic": "science", "finance": "general"}.get(topic, "general")
+        params = {"q": query, "format": "json", "categories": category, "pageno": 1}
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                r = await client.get(f"{self.base_url}/search", params=params)
+                r.raise_for_status()
+                data = r.json()
+        except Exception:
+            return []
+
+        results = []
+        for i, item in enumerate(data.get("results", [])[:max_results], start=1):
+            url = item.get("url", "")
+            if not url:
+                continue
+            results.append(SearchResult(
+                title=item.get("title", url),
+                url=url,
+                snippet=(item.get("content") or "")[:300],
+                source_domain=domain_of(url),
+                rank=i,
+                provider=self.name,
+                retrieved_at=datetime.now(timezone.utc),
+            ))
+        return results

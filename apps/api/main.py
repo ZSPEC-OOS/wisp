@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
 import uuid
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -19,6 +21,27 @@ app = FastAPI(title="WISP API", version="1.0.0", description="Free, self-hostabl
 
 _access_logger = logging.getLogger("wisp.access")
 _startup_logger = logging.getLogger("wisp.startup")
+
+
+class MaxBodySizeMiddleware(BaseHTTPMiddleware):
+    """Reject request bodies larger than max_bytes with HTTP 413."""
+
+    def __init__(self, app, max_bytes: int = 1_048_576):
+        super().__init__(app)
+        self.max_bytes = max_bytes
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method in {"POST", "PUT", "PATCH"}:
+            content_length = request.headers.get("content-length")
+            if content_length and int(content_length) > self.max_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "error": "request_too_large",
+                        "detail": f"Body exceeds {self.max_bytes} bytes",
+                    },
+                )
+        return await call_next(request)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -65,6 +88,7 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
             _request_id_var.reset(token)
 
 
+app.add_middleware(MaxBodySizeMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(AccessLogMiddleware)
 app.add_middleware(RequestIDMiddleware)
@@ -108,6 +132,28 @@ async def _startup_checks() -> None:
     _startup_logger.info("wisp_started", extra={"version": "1.0.0", "env": settings.env})
 
 
+@app.on_event("startup")
+async def _start_cache_metrics_updater() -> None:
+    """Background task: push cache size and hit-rate to Prometheus Gauges every 30 s."""
+    from apps.api.dependencies.services import cache as _cache
+    from apps.api.routes.api import CACHE_HIT_RATE, CACHE_SIZE
+
+    async def _update_loop() -> None:
+        while True:
+            stats = _cache.stats()
+            CACHE_SIZE.set(stats["size"])
+            CACHE_HIT_RATE.set(stats["hit_rate"])
+            await asyncio.sleep(30)
+
+    asyncio.create_task(_update_loop())
+
+
+@app.on_event("shutdown")
+async def _shutdown_cleanup() -> None:
+    from apps.api.dependencies.services import cache as _cache
+    _cache._prune_expired()
+
+
 @app.get("/")
 async def root() -> dict[str, str]:
     return {
@@ -121,5 +167,24 @@ async def root() -> dict[str, str]:
 
 
 @app.exception_handler(Exception)
-async def unhandled_exception(_: Request, exc: Exception):
-    return JSONResponse(status_code=500, content={"error": "internal_error", "detail": str(exc)})
+async def unhandled_exception(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "internal_error",
+            "detail": str(exc),
+            "request_id": getattr(request.state, "request_id", None),
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "validation_error",
+            "detail": exc.errors(),
+            "request_id": getattr(request.state, "request_id", None),
+        },
+    )

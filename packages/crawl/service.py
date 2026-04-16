@@ -11,8 +11,6 @@ from bs4 import BeautifulSoup
 from packages.common.url import canonicalize_url, domain_of
 from packages.extract.service import ExtractService
 
-_CRAWL_CONCURRENCY = 5
-
 
 class CrawlService:
     def __init__(self, extractor: ExtractService):
@@ -25,6 +23,7 @@ class CrawlService:
         max_depth: int = 2,
         allowed_domains: list[str] | None = None,
         timeout_seconds: int = 10,
+        concurrency: int = 5,
     ) -> dict:
         seed = canonicalize_url(seed_url)
         base_domain = domain_of(seed)
@@ -49,25 +48,31 @@ class CrawlService:
             sitemap_urls: list[str] = list(rp.site_maps() or [])
             if not sitemap_urls:
                 sitemap_urls = [urljoin(seed, "/sitemap.xml")]
+
             for sitemap_url in sitemap_urls:
                 try:
                     resp = await client.get(sitemap_url)
                     if resp.status_code == 200:
                         soup = BeautifulSoup(resp.text, "lxml-xml")
                         if soup.find("sitemapindex"):
-                            # Recurse one level into child sitemaps
-                            child_sitemap_locs = [loc.text.strip() for loc in soup.find_all("loc")]
-                            for child_url in child_sitemap_locs[:5]:
+                            # Fetch child sitemaps in parallel
+                            child_locs = [loc.text.strip() for loc in soup.find_all("loc")]
+
+                            async def _fetch_child(child_url: str) -> list[str]:
                                 try:
                                     child_resp = await client.get(child_url)
                                     if child_resp.status_code == 200:
-                                        child_soup = BeautifulSoup(child_resp.text, "lxml-xml")
-                                        for loc in child_soup.find_all("loc"):
-                                            loc_url = canonicalize_url(loc.text.strip())
-                                            if loc_url and domain_of(loc_url) in allow and loc_url not in visited:
-                                                q.append((loc_url, 0))
+                                        cs = BeautifulSoup(child_resp.text, "lxml-xml")
+                                        return [canonicalize_url(l.text.strip()) for l in cs.find_all("loc")]
                                 except Exception:
                                     pass
+                                return []
+
+                            child_results = await asyncio.gather(*[_fetch_child(u) for u in child_locs[:5]])
+                            for urls in child_results:
+                                for loc_url in urls:
+                                    if loc_url and domain_of(loc_url) in allow and loc_url not in visited:
+                                        q.append((loc_url, 0))
                         else:
                             for loc in soup.find_all("loc"):
                                 loc_url = canonicalize_url(loc.text.strip())
@@ -76,7 +81,7 @@ class CrawlService:
                 except Exception:
                     pass
 
-            sem = asyncio.Semaphore(_CRAWL_CONCURRENCY)
+            sem = asyncio.Semaphore(concurrency)
 
             async def _fetch_page(url: str, depth: int) -> None:
                 if url in visited or len(visited) >= max_pages:
@@ -90,6 +95,11 @@ class CrawlService:
                 async with sem:
                     try:
                         r = await client.get(url, headers={"User-Agent": self.extractor.user_agent})
+                        # Skip non-HTML content
+                        ct = r.headers.get("content-type", "")
+                        if not any(t in ct for t in ("text/html", "application/xhtml")):
+                            nodes.append({"url": url, "title": None, "depth": depth, "skipped": True})
+                            return
                         soup = BeautifulSoup(r.text, "lxml")
                         title = (soup.title.text or "").strip() if soup.title else None
                         nodes.append({"url": url, "title": title, "depth": depth})
@@ -105,10 +115,10 @@ class CrawlService:
                     except Exception as exc:
                         failures.append({"url": url, "error": str(exc)})
 
-            # Process in batches of _CRAWL_CONCURRENCY
+            # Process in batches
             while q and len(visited) < max_pages:
                 batch = []
-                while q and len(batch) < _CRAWL_CONCURRENCY:
+                while q and len(batch) < concurrency:
                     batch.append(q.popleft())
                 await asyncio.gather(*[_fetch_page(url, depth) for url, depth in batch])
 

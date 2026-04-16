@@ -8,22 +8,28 @@ class TTLCache:
         self.ttl = ttl_seconds
         self.max_size = max_size
         self._data: dict[str, tuple[datetime, object]] = {}
+        self._hits = 0
+        self._misses = 0
+        self._evictions = 0
 
     def get(self, key: str):
         if key not in self._data:
+            self._misses += 1
             return None
         expires_at, value = self._data[key]
         if expires_at < datetime.now(timezone.utc):
             self._data.pop(key, None)
+            self._misses += 1
             return None
+        self._hits += 1
         return value
 
     def set(self, key: str, value: object, ttl: int | None = None) -> None:
         lifetime = ttl if ttl is not None else self.ttl
-        # Evict oldest entry when at capacity
         if len(self._data) >= self.max_size and key not in self._data:
             oldest_key = min(self._data, key=lambda k: self._data[k][0])
             del self._data[oldest_key]
+            self._evictions += 1
         self._data[key] = (datetime.now(timezone.utc) + timedelta(seconds=lifetime), value)
 
     def invalidate(self, prefix: str | None = None) -> None:
@@ -34,5 +40,21 @@ class TTLCache:
             if key.startswith(prefix):
                 del self._data[key]
 
+    def _prune_expired(self) -> int:
+        """Remove all expired entries. Returns count of pruned entries."""
+        now = datetime.now(timezone.utc)
+        expired = [k for k, (exp, _) in self._data.items() if exp < now]
+        for k in expired:
+            del self._data[k]
+        return len(expired)
+
     def stats(self) -> dict:
-        return {"size": len(self._data), "max_size": self.max_size}
+        total = self._hits + self._misses
+        return {
+            "size": len(self._data),
+            "max_size": self.max_size,
+            "hits": self._hits,
+            "misses": self._misses,
+            "evictions": self._evictions,
+            "hit_rate": round(self._hits / max(1, total), 4),
+        }

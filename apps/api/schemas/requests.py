@@ -32,6 +32,7 @@ class CrawlRequest(BaseModel):
     max_depth: int = Field(default=2, ge=0, le=6)
     allowed_domains: list[str] | None = None
     timeout_seconds: int = Field(default=10, ge=2, le=60)
+    concurrency: int = Field(default=5, ge=1, le=20)
 
 
 class MapRequest(BaseModel):
