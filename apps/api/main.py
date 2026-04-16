@@ -121,6 +121,14 @@ async def _startup_checks() -> None:
     _startup_logger.info("wisp_started", extra={"version": "1.0.0", "env": settings.env})
 
 
+@app.on_event("shutdown")
+async def _graceful_shutdown() -> None:
+    from apps.api.dependencies.services import cache
+
+    pruned = cache._prune_expired()
+    _startup_logger.info("wisp_shutdown", extra={"cache_pruned": pruned})
+
+
 @app.get("/")
 async def root() -> dict[str, str]:
     return {

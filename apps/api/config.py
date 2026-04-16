@@ -1,9 +1,13 @@
+import json
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="WISP_")
 
+    config_file: str = ""  # path to a JSON file whose keys override env vars
     env: str = "dev"
     db_url: str = "sqlite+aiosqlite:///./wisp.db"
     http_timeout: int = 12
@@ -20,4 +24,12 @@ class Settings(BaseSettings):
     searxng_url: str = ""            # e.g. "http://localhost:8080" — self-hosted SearXNG instance
 
 
-settings = Settings()
+def _load_settings() -> Settings:
+    settings_obj = Settings()
+    if settings_obj.config_file and Path(settings_obj.config_file).exists():
+        overrides = json.loads(Path(settings_obj.config_file).read_text())
+        settings_obj = settings_obj.model_copy(update=overrides)
+    return settings_obj
+
+
+settings = _load_settings()
