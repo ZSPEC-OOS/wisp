@@ -28,6 +28,10 @@ dependencies = [
 [project.optional-dependencies]
 embeddings = ["sentence-transformers>=3.0"]
 academic = ["pypdf>=4.0"]
+# LLM synthesis server (pick one — not required to run WISP itself)
+# vLLM:   pip install -e .[llm-vllm]   then: vllm serve Qwen/Qwen3-8B --port 8001
+# Ollama: install from https://ollama.com then: ollama pull qwen3:8b && ollama serve
+llm-vllm = ["vllm>=0.5"]
 dev = [
   "pytest>=8.3",
   "pytest-asyncio>=0.23",
