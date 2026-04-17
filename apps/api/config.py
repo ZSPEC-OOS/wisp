@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     config_file: str = ""  # path to a JSON file whose keys override env vars
     env: str = "dev"
     db_url: str = "sqlite+aiosqlite:///./wisp.db"
+    redis_url: str = ""            # e.g. "redis://localhost:6379" — enables distributed rate limiting
     http_timeout: int = 12
     user_agent: str = "WISPBot/0.1 (+https://localhost)"
     cache_ttl_seconds: int = 900

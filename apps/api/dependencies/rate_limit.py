@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from typing import Any
 
 from fastapi import Header, HTTPException, Request, status
 
 from apps.api.config import settings
 
+
+# ── In-process token bucket (single-worker fallback) ────────────────────────
 
 class _Bucket:
     __slots__ = ("capacity", "tokens", "refill_rate", "last_refill")
@@ -29,19 +32,13 @@ class _Bucket:
         return False
 
     def time_to_next_token(self) -> float:
-        """Return seconds until the next token becomes available."""
         if self.refill_rate <= 0:
             return 60.0
         return (1.0 - self.tokens) / self.refill_rate
 
 
-class _TokenBucketLimiter:
-    """Per-process in-memory token bucket rate limiter.
-
-    NOTE: Each worker process has an independent bucket. Under uvicorn
-    --workers N the effective limit becomes N * rate_limit_per_minute.
-    For multi-worker deployments, replace with a Redis-backed backend.
-    """
+class _InMemoryLimiter:
+    """Per-process token bucket. Accurate only for single-worker deployments."""
 
     def __init__(self) -> None:
         self._buckets: dict[str, _Bucket] = {}
@@ -64,14 +61,80 @@ class _TokenBucketLimiter:
                 )
 
 
-_limiter = _TokenBucketLimiter()
+# ── Redis sliding-window rate limiter (multi-worker safe) ────────────────────
 
+class _RedisLimiter:
+    """Fixed-window rate limiter backed by Redis.
+
+    Uses INCR + EXPIRE per (identifier, minute-bucket) key.  Accurate across
+    any number of workers sharing the same Redis instance.
+    """
+
+    def __init__(self, redis_url: str) -> None:
+        self._redis_url = redis_url
+        self._redis: Any = None
+        self._lock = asyncio.Lock()
+
+    async def _get_redis(self):
+        if self._redis is not None:
+            return self._redis
+        async with self._lock:
+            if self._redis is None:
+                import redis.asyncio as aioredis  # optional dep
+                self._redis = await aioredis.from_url(
+                    self._redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2,
+                )
+        return self._redis
+
+    async def check(self, key: str, rpm: int) -> None:
+        try:
+            r = await self._get_redis()
+            minute_bucket = int(time.time() // 60)
+            redis_key = f"rl:{key}:{minute_bucket}"
+            count = await r.incr(redis_key)
+            if count == 1:
+                await r.expire(redis_key, 120)  # 2-minute TTL covers boundary bursts
+            if count > rpm:
+                seconds_left = 60 - int(time.time() % 60)
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="rate_limit_exceeded",
+                    headers={"Retry-After": str(max(1, seconds_left))},
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            # Redis unavailable — degrade gracefully to allow the request
+            pass
+
+    async def aclose(self) -> None:
+        if self._redis is not None:
+            await self._redis.aclose()
+
+
+# ── Limiter selection ────────────────────────────────────────────────────────
+
+_limiter: _InMemoryLimiter | _RedisLimiter
+
+def _build_limiter() -> _InMemoryLimiter | _RedisLimiter:
+    if settings.redis_url:
+        return _RedisLimiter(settings.redis_url)
+    return _InMemoryLimiter()
+
+
+_limiter = _build_limiter()
+
+
+# ── FastAPI dependencies ─────────────────────────────────────────────────────
 
 async def require_rate_limit(
     request: Request,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> None:
-    """FastAPI dependency. No-op when rate_limit_per_minute == 0."""
+    """Global rate limit dependency. No-op when rate_limit_per_minute == 0."""
     if not settings.rate_limit_per_minute:
         return
     key = x_api_key or (request.client.host if request.client else "anonymous")
@@ -79,10 +142,7 @@ async def require_rate_limit(
 
 
 def make_rate_limit_dep(endpoint_rpm_getter):
-    """Factory for per-endpoint rate limit dependencies.
-
-    endpoint_rpm_getter: callable returning the RPM for this endpoint (0 = use global).
-    """
+    """Factory for per-endpoint rate limit dependencies."""
     async def dep(
         request: Request,
         x_api_key: str | None = Header(default=None, alias="X-API-Key"),

@@ -171,6 +171,9 @@ async def _startup_checks() -> None:
         from packages.search.pipeline import _load_embedder
         _load_embedder()
 
+    from packages.storage.database import init_db
+    await init_db()
+
     _startup_logger.info("wisp_started", extra={"version": "1.0.0", "env": settings.env})
 
 
@@ -192,12 +195,32 @@ async def _start_cache_metrics_updater() -> None:
 
 @app.on_event("shutdown")
 async def _shutdown_cleanup() -> None:
-    from apps.api.dependencies.services import _llm_client, cache as _cache
+    from apps.api.dependencies.services import _llm_client, cache as _cache, extract_service as _extract_service
+    from apps.api.dependencies.rate_limit import _limiter
+    from packages.storage.database import close_db
+
     if _llm_client is not None:
         try:
             await _llm_client.aclose()
         except Exception:
             pass
+
+    try:
+        await _extract_service.aclose()
+    except Exception:
+        pass
+
+    if hasattr(_limiter, "aclose"):
+        try:
+            await _limiter.aclose()
+        except Exception:
+            pass
+
+    try:
+        await close_db()
+    except Exception:
+        pass
+
     pruned = _cache._prune_expired()
     _startup_logger.info("wisp_shutdown", extra={"cache_pruned": pruned})
 

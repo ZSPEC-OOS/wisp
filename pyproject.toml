@@ -27,7 +27,9 @@ dependencies = [
 
 [project.optional-dependencies]
 embeddings = ["sentence-transformers>=3.0"]
-academic = ["pypdf>=4.0"]
+academic    = ["pypdf>=4.0"]
+redis       = ["redis[asyncio]>=5.0"]
+postgres    = ["asyncpg>=0.30"]
 dev = [
   "pytest>=8.3",
   "pytest-asyncio>=0.23",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import Counter as _Counter
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -14,6 +15,8 @@ from apps.api.dependencies.services import cache, crawl_service, extract_service
 from apps.api.schemas.requests import CrawlRequest, ExtractRequest, MapRequest, ResearchRequest, SearchRequest
 from apps.api.schemas.responses import CrawlResponse, ExtractResponse, HealthResponse, MapResponse, ResearchResponse, SearchResponse
 from packages.search.pipeline import rerank_passages
+
+_db_logger = logging.getLogger("wisp.db_write")
 
 router = APIRouter()
 public_router = APIRouter()
@@ -77,6 +80,35 @@ _llm_req_used  = 0
 # Per-endpoint rate limit dependencies for heavier operations
 _research_rate_limit = make_rate_limit_dep(lambda: settings.research_rate_limit_per_minute)
 _crawl_rate_limit = make_rate_limit_dep(lambda: settings.crawl_rate_limit_per_minute)
+
+
+# ── Fire-and-forget DB write helpers ─────────────────────────────────────────
+
+async def _persist_search(query: str, result_count: int) -> None:
+    try:
+        from packages.storage.database import get_session
+        from packages.storage.models import Query
+        async with get_session() as s:
+            s.add(Query(query=query[:500]))
+    except Exception as exc:
+        _db_logger.debug("search_persist_failed", extra={"error": str(exc)})
+
+
+async def _persist_research(query: str, mode: str, out: dict) -> None:
+    try:
+        from packages.storage.database import get_session
+        from packages.storage.models import ResearchTask
+        trace = out.get("research_trace", {})
+        payload = {
+            "confidence_score": out.get("confidence_score", 0.0),
+            "timing_ms":        trace.get("timing_ms", {}),
+            "sources_count":    trace.get("sources_considered", 0),
+            "llm_invoked":      trace.get("llm", {}).get("llm_invoked", False),
+        }
+        async with get_session() as s:
+            s.add(ResearchTask(query=query[:1000], mode=mode, result=payload))
+    except Exception as exc:
+        _db_logger.debug("research_persist_failed", extra={"error": str(exc)})
 
 
 @public_router.get("/livez")
@@ -257,6 +289,7 @@ async def search(payload: SearchRequest) -> SearchResponse:
     )
     if not warnings:
         cache.set(key, body.model_dump(mode="json"))
+    asyncio.create_task(_persist_search(payload.query, len(results)))
     return body
 
 
@@ -363,6 +396,7 @@ async def research(payload: ResearchRequest) -> ResearchResponse:
 
         body = ResearchResponse(**out)
         cache.set(key, body.model_dump(mode="json"))
+        asyncio.create_task(_persist_research(payload.query, payload.mode, out))
         return body
     except Exception as exc:
         ERRORS.labels(endpoint="research", error_type=type(exc).__name__).inc()
