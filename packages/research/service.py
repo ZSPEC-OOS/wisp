@@ -123,7 +123,14 @@ class ResearchService:
 
         for q in queries:
             executed_queries.append(q)
-            all_results.extend(await self.search.search(q, max_results=max_sources))
+            try:
+                results = await asyncio.wait_for(
+                    self.search.search(q, max_results=max_sources),
+                    timeout=settings.search_timeout_seconds,
+                )
+                all_results.extend(results)
+            except asyncio.TimeoutError:
+                logger.warning("Search timed out for query: %r", q)
 
         t_search = time.perf_counter()
 
@@ -147,9 +154,9 @@ class ResearchService:
                 quick_docs = await _prefetch_task
                 _prefetch_task = None
             else:
-                if _prefetch_task is not None:
+                if _prefetch_task is not None and not _prefetch_task.done():
                     _prefetch_task.cancel()
-                    _prefetch_task = None
+                _prefetch_task = None
                 quick_docs = await self.extract.extract_many(top3_urls)
 
             quick_passages: list[Passage] = []
@@ -161,9 +168,17 @@ class ResearchService:
             if not followup or followup in executed_queries:
                 break
             executed_queries.append(followup)
-            all_results.extend(await self.search.search(followup, max_results=max_sources))
+            try:
+                followup_results = await asyncio.wait_for(
+                    self.search.search(followup, max_results=max_sources),
+                    timeout=settings.search_timeout_seconds,
+                )
+                all_results.extend(followup_results)
+            except asyncio.TimeoutError:
+                logger.warning("Follow-up search timed out for query: %r", followup)
+                break
 
-        if _prefetch_task is not None:
+        if _prefetch_task is not None and not _prefetch_task.done():
             _prefetch_task.cancel()
 
         # ── Domain filters ────────────────────────────────────────────────
@@ -190,7 +205,14 @@ class ResearchService:
                 result_map[r.oa_pdf_url] = r
 
         extract_urls = [r.oa_pdf_url or str(r.url) for r in top]
-        docs: list[ExtractedDocument] = await self.extract.extract_many(extract_urls)
+        try:
+            docs: list[ExtractedDocument] = await asyncio.wait_for(
+                self.extract.extract_many(extract_urls),
+                timeout=settings.extract_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Main extraction timed out after %ss", settings.extract_timeout_seconds)
+            docs = []
 
         t_extract = time.perf_counter()
 

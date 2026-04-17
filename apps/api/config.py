@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     academic_max_results: int = 4    # Results per academic provider
     searxng_url: str = ""            # e.g. "http://localhost:8080" — self-hosted SearXNG instance
 
+    # Per-phase timeouts for the research pipeline
+    search_timeout_seconds:  float = 15.0   # per search call inside /research
+    extract_timeout_seconds: float = 30.0   # total extraction budget inside /research
+
     # ── Optional LLM synthesis (Qwen3-8B or any OpenAI-compatible endpoint) ──
     # Global off switch — all LLM paths are no-ops when False
     llm_enabled: bool = False

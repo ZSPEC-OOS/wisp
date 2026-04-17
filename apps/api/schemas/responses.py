@@ -56,5 +56,3 @@ class ResearchResponse(BaseModel):
     confidence_score: float = 0.0
     research_trace: dict
     mode: str
-    structured_answer: dict | None = None
-    confidence_score: float = 0.0

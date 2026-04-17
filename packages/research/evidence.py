@@ -91,10 +91,23 @@ def build_evidence_profile(
     else:
         clear_winner = len(scores) == 1  # single chunk trivially dominates
 
-    # Confidence: provider diversity × average trust (mirrors existing formula)
-    provider_diversity = len(providers) / max(len(chunks), 1)
+    # Confidence: normalize to [0, 1] using source diversity and average trust.
+    # Use additive blend to avoid the product collapsing to near-zero with few providers.
+    provider_diversity = min(1.0, len(providers) / 3)  # saturates at 3 providers
     avg_trust = sum(c.metadata.get("trust_score", 0.5) for c in chunks) / len(chunks)
-    confidence = round(min(1.0, provider_diversity * avg_trust * 2), 4)
+    confidence = round(0.4 * provider_diversity + 0.6 * avg_trust, 4)
+
+    # Conflict heuristic: flag when multiple sources are present but scores are
+    # polarised (one strong outlier among weaker ones) — a sign that sources
+    # disagree rather than converge on the same answer.
+    min_score = float(min(scores)) if scores else 0.0
+    likely_conflict = (
+        len(source_urls) >= 2
+        and len(providers) >= 2
+        and len(scores) >= 3
+        and (top1 - min_score) > 0.35
+        and top1 > top2 * 1.5
+    )
 
     return EvidenceProfile(
         evidence_count=len(chunks),
@@ -106,5 +119,5 @@ def build_evidence_profile(
         has_clear_winner=clear_winner,
         has_source_diversity=len(source_urls) >= 2,
         confidence_score=confidence,
-        likely_conflict=False,
+        likely_conflict=likely_conflict,
     )
