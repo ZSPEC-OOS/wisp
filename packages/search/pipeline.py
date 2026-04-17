@@ -21,6 +21,8 @@ _TOPIC_WEIGHTS: dict[str, dict[str, float]] = {
     "news":     {"rank": 0.20, "trust": 0.25, "freshness": 0.40, "relevance": 0.15, "citation": 0.00},
     "finance":  {"rank": 0.20, "trust": 0.30, "freshness": 0.35, "relevance": 0.15, "citation": 0.00},
     "general":  {"rank": 0.28, "trust": 0.28, "freshness": 0.18, "relevance": 0.18, "citation": 0.08},
+    # Authoritative docs + high BM25 relevance; moderate freshness (docs don't expire like news)
+    "code":     {"rank": 0.20, "trust": 0.35, "freshness": 0.15, "relevance": 0.30, "citation": 0.00},
 }
 
 
@@ -99,8 +101,8 @@ def score_result(result: SearchResult, topic: str = "general") -> SearchResult:
         freshness = max(0.2, 1.0 - (years_old / 10.0))
     elif result.published_date is not None:
         days_old = (now - result.published_date).days
-        # News/finance: 48-hour relevance window; general web: 90-day window
-        window = 2.0 if topic in ("news", "finance") else 90.0
+        # News/finance: 48-hour window; code docs: 180-day window; general web: 90-day window
+        window = 2.0 if topic in ("news", "finance") else 180.0 if topic == "code" else 90.0
         freshness = max(0.1, 1.0 - (days_old / window))
     else:
         freshness = 0.5
