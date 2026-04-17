@@ -57,3 +57,11 @@ class ResearchResponse(BaseModel):
     confidence_score: float = 0.0
     research_trace: dict
     mode: str
+
+
+class CrawlJobResponse(BaseModel):
+    job_id: str
+    status: str
+    created_at: str
+    result: dict | None = None
+    error: str | None = None

@@ -25,6 +25,7 @@ class ExtractRequest(BaseModel):
     format: Literal["markdown", "text"] = "markdown"
     include_images: bool = False
     timeout_seconds: int = Field(default=12, ge=2, le=90)
+    js_render: bool = False
 
     @field_validator("urls", mode="before")
     @classmethod
