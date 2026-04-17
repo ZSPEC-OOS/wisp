@@ -1,10 +1,8 @@
 'use strict';
 
-const PIN = '5522';
-const API_KEY = 'wsp_admin_unlimited';
-
 const state = {
   authed:   false,
+  apiKey:   '',
   darkMode: true,
 };
 
@@ -29,13 +27,16 @@ const el = {
 
 // ── Persistence ───────────────────────────────────────────
 const save = () => {
-  try { localStorage.setItem('wisp-authed', state.authed ? '1' : ''); } catch {}
+  try {
+    localStorage.setItem('wisp-authed', state.authed ? '1' : '');
+    // Never persist the key to localStorage — fetch it fresh each session
+  } catch {}
 };
 
 const load = () => {
   try {
-    state.authed   = !!localStorage.getItem('wisp-authed');
-    const theme    = localStorage.getItem('wisp-theme');
+    // Restore theme only; auth state requires a fresh PIN each session for security
+    const theme = localStorage.getItem('wisp-theme');
     if (theme !== null) state.darkMode = theme === 'dark';
   } catch {}
 };
@@ -57,14 +58,14 @@ const render = () => {
   document.documentElement.setAttribute('data-theme', state.darkMode ? 'dark' : 'light');
 
   el.statusBar.classList.toggle('hidden', !state.authed);
-  if (state.authed) {
-    el.apikeyDisplay.textContent = API_KEY;
+  if (state.authed && state.apiKey) {
+    el.apikeyDisplay.textContent = state.apiKey;
   }
 
   el.authGate.classList.toggle('hidden', state.authed);
   el.authDash.classList.toggle('hidden', !state.authed);
-  if (state.authed) {
-    el.apikeyLarge.textContent = API_KEY;
+  if (state.authed && state.apiKey) {
+    el.apikeyLarge.textContent = state.apiKey;
   }
 
   el.signInLink.textContent = state.authed ? 'Dashboard' : 'Sign in';
@@ -73,16 +74,36 @@ const render = () => {
 };
 
 // ── Auth ──────────────────────────────────────────────────
-const doLogin = pin => {
-  if (pin === PIN) {
+const doLogin = async pin => {
+  try {
+    const res = await fetch('/auth/unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    });
+
+    if (res.status === 429) {
+      return { ok: false, message: 'Too many attempts. Try again in 60 seconds.' };
+    }
+    if (res.status === 503) {
+      return { ok: false, message: 'Auth not configured on server.' };
+    }
+    if (!res.ok) {
+      return { ok: false, message: 'Incorrect PIN.' };
+    }
+
+    const data = await res.json();
     state.authed = true;
+    state.apiKey = data.api_key;
     return { ok: true };
+  } catch {
+    return { ok: false, message: 'Network error — please try again.' };
   }
-  return { ok: false, message: 'Incorrect PIN.' };
 };
 
 const doLogout = () => {
   state.authed = false;
+  state.apiKey = '';
   el.authMsg.textContent = '';
   render();
 };
@@ -97,11 +118,19 @@ const bootstrap = () => {
     render();
   });
 
-  el.loginForm.addEventListener('submit', e => {
+  el.loginForm.addEventListener('submit', async e => {
     e.preventDefault();
+    const submitBtn = e.currentTarget.querySelector('button[type="submit"]');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Checking…';
+
     const fd  = new FormData(e.currentTarget);
     const pin = String(fd.get('pin') ?? '').trim();
-    const result = doLogin(pin);
+    const result = await doLogin(pin);
+
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Unlock';
+
     if (result.ok) {
       e.currentTarget.reset();
       el.authMsg.textContent = '';
@@ -116,11 +145,11 @@ const bootstrap = () => {
   el.logoutBtnDash.addEventListener('click', doLogout);
 
   el.copyKeyBtn?.addEventListener('click', () => {
-    copyToClipboard(API_KEY, el.copyKeyBtn);
+    copyToClipboard(state.apiKey, el.copyKeyBtn);
   });
 
   el.copyKeyBtnDash?.addEventListener('click', () => {
-    copyToClipboard(API_KEY, el.copyKeyBtnDash);
+    copyToClipboard(state.apiKey, el.copyKeyBtnDash);
   });
 
   render();

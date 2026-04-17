@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json as _json
 import logging
 import uuid as _uuid
 from collections import Counter as _Counter
 from datetime import datetime as _datetime, timezone as _tz
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from starlette.responses import RedirectResponse, Response, StreamingResponse
 
@@ -204,6 +205,46 @@ async def readyz() -> Response:
         content=f'{{"status":"{"degraded" if degraded else "ready"}","checks":{__import__("json").dumps(checks)}}}',
         media_type="application/json",
         status_code=status_code,
+    )
+
+
+@public_router.post("/auth/unlock")
+async def auth_unlock(request: Request) -> Response:
+    """Verify admin PIN and return the admin API key.
+
+    The PIN and key are stored in environment variables — never in client code.
+    Brute-force is limited to 5 wrong attempts per IP per minute.
+    """
+    if not settings.admin_pin:
+        raise HTTPException(status_code=503, detail="pin_auth_not_configured")
+
+    body = await request.json()
+    pin = str(body.get("pin", "")).strip()
+
+    client_ip = request.client.host if request.client else "unknown"
+
+    # Reuse the auth lockout store to rate-limit PIN attempts per IP
+    from apps.api.dependencies.auth import _is_locked_out, _record_failure, _LOCKOUT_THRESHOLD
+    if await _is_locked_out("pin", client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too_many_pin_attempts",
+            headers={"Retry-After": "60"},
+        )
+
+    if not hmac.compare_digest(pin, settings.admin_pin):
+        await _record_failure("pin", client_ip)
+        raise HTTPException(status_code=401, detail="invalid_pin")
+
+    key = settings.admin_api_key or (
+        settings.api_keys.split(",")[0].strip() if settings.api_keys else ""
+    )
+    if not key:
+        raise HTTPException(status_code=503, detail="no_api_key_configured")
+
+    return Response(
+        content=_json.dumps({"api_key": key}),
+        media_type="application/json",
     )
 
 

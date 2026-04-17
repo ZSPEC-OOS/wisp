@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     academic_max_results: int = 4    # Results per academic provider
     searxng_url: str = ""            # e.g. "http://localhost:8080" — self-hosted SearXNG instance
     brave_api_key: str = ""          # Brave Search API key — enables high-quality direct web search
+    admin_pin: str = ""              # PIN required to retrieve the admin API key via /auth/unlock
+    admin_api_key: str = ""          # API key returned to the dashboard after PIN verification
 
     # Per-phase timeouts for the research pipeline
     search_timeout_seconds:  float = 15.0   # per search call inside /research

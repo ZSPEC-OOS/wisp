@@ -5,6 +5,7 @@
     { "src": "apps/launch-site/**", "use": "@vercel/static" }
   ],
   "routes": [
+    { "src": "/auth/unlock", "dest": "main.py" },
     { "src": "/health", "dest": "main.py" },
     { "src": "/metrics", "dest": "main.py" },
     { "src": "/search", "dest": "main.py" },
