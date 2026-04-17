@@ -32,6 +32,8 @@ academic = ["pypdf>=4.0"]
 # vLLM:   pip install -e .[llm-vllm]   then: vllm serve Qwen/Qwen3-8B --port 8001
 # Ollama: install from https://ollama.com then: ollama pull qwen3:8b && ollama serve
 llm-vllm = ["vllm>=0.5"]
+redis    = ["redis[asyncio]>=5.0"]
+postgres = ["asyncpg>=0.30"]
 dev = [
   "pytest>=8.3",
   "pytest-asyncio>=0.23",

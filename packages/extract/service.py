@@ -66,10 +66,21 @@ class ExtractService:
     def __init__(self, user_agent: str, timeout_seconds: int = 12):
         self.user_agent = user_agent
         self.timeout_seconds = timeout_seconds
+        # Shared persistent client — reuses TCP connections across requests.
+        # Capped pool prevents fd exhaustion under concurrent crawl + extract load.
+        self._client = httpx.AsyncClient(
+            headers={"User-Agent": user_agent},
+            timeout=httpx.Timeout(connect=5.0, read=float(timeout_seconds), write=10.0, pool=5.0),
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=30, max_keepalive_connections=10),
+        )
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=4))
-    async def _fetch(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
-        response = await client.get(url)
+    async def _fetch(self, url: str) -> httpx.Response:
+        response = await self._client.get(url)
         # Treat transient server errors as retryable
         if response.status_code in {429, 503}:
             raise httpx.HTTPStatusError(
@@ -80,11 +91,9 @@ class ExtractService:
         return response
 
     async def extract_url(self, url: str, format: str = "markdown", include_images: bool = False) -> ExtractedDocument:
-        headers = {"User-Agent": self.user_agent}
         t0 = time.perf_counter()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=headers, follow_redirects=True) as client:
-                response = await self._fetch(client, url)
+            response = await self._fetch(url)
             content_type = response.headers.get("content-type", "")
             is_pdf = "application/pdf" in content_type or url.lower().endswith(".pdf")
 
@@ -94,10 +103,7 @@ class ExtractService:
                 # pypdf not installed — fall back to the arXiv abstract page if possible
                 if "arxiv.org/pdf" in url:
                     url = url.replace("/pdf/", "/abs/").removesuffix(".pdf")
-                    async with httpx.AsyncClient(
-                        timeout=self.timeout_seconds, headers=headers, follow_redirects=True
-                    ) as client2:
-                        response = await self._fetch(client2, url)
+                    response = await self._fetch(url)
                 body = response.text
                 md = trafilatura.extract(body, output_format="markdown" if format == "markdown" else "txt",
                                          include_images=include_images, include_comments=False, include_tables=True)

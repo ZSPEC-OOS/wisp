@@ -6,30 +6,44 @@ import string
 import time
 from collections.abc import Callable
 
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, Request, status
 
 from apps.api.config import settings
 
 logger = logging.getLogger("wisp.auth")
 
-# Failed-auth lockout: track timestamps of failures per identifier
+# Per-key-prefix lockout
 _failed_attempts: dict[str, list[float]] = {}
-_LOCKOUT_WINDOW = 60.0   # seconds
-_LOCKOUT_THRESHOLD = 5   # failures within window → 429
+_LOCKOUT_WINDOW     = 60.0  # seconds
+_LOCKOUT_THRESHOLD  = 5     # failures per key prefix within window
+
+# Global per-IP lockout — stops rotating-key brute-force attacks
+_failed_by_ip: dict[str, list[float]] = {}
+_IP_LOCKOUT_THRESHOLD = 20  # total failures from one IP within window
 
 
-def _record_failure(identifier: str) -> None:
+def _prune(attempts: list[float], now: float) -> list[float]:
+    return [t for t in attempts if now - t < _LOCKOUT_WINDOW]
+
+
+def _record_failure(identifier: str, client_ip: str | None) -> None:
     now = time.monotonic()
     attempts = _failed_attempts.setdefault(identifier, [])
     attempts.append(now)
-    # Prune old entries
-    _failed_attempts[identifier] = [t for t in attempts if now - t < _LOCKOUT_WINDOW]
+    _failed_attempts[identifier] = _prune(attempts, now)
+    if client_ip:
+        ip_attempts = _failed_by_ip.setdefault(client_ip, [])
+        ip_attempts.append(now)
+        _failed_by_ip[client_ip] = _prune(ip_attempts, now)
 
 
-def _is_locked_out(identifier: str) -> bool:
+def _is_locked_out(identifier: str, client_ip: str | None) -> bool:
     now = time.monotonic()
-    recent = [t for t in _failed_attempts.get(identifier, []) if now - t < _LOCKOUT_WINDOW]
-    return len(recent) >= _LOCKOUT_THRESHOLD
+    if len(_prune(_failed_attempts.get(identifier, []), now)) >= _LOCKOUT_THRESHOLD:
+        return True
+    if client_ip and len(_prune(_failed_by_ip.get(client_ip, []), now)) >= _IP_LOCKOUT_THRESHOLD:
+        return True
+    return False
 
 
 def _normalize_key(key: str) -> str:
@@ -50,17 +64,18 @@ def validate_api_key_format(key: str) -> bool:
         return False
     if not all(c in string.printable and c not in string.whitespace for c in key):
         return False
-    # Require at least 2 distinct character classes for basic entropy
-    has_upper = any(c.isupper() for c in key)
-    has_lower = any(c.islower() for c in key)
-    has_digit = any(c.isdigit() for c in key)
+    has_upper  = any(c.isupper() for c in key)
+    has_lower  = any(c.islower() for c in key)
+    has_digit  = any(c.isdigit() for c in key)
     has_symbol = any(c in string.punctuation for c in key)
-    char_classes = sum([has_upper, has_lower, has_digit, has_symbol])
-    return char_classes >= 2
+    return sum([has_upper, has_lower, has_digit, has_symbol]) >= 2
 
 
 def api_key_guard_factory(parse_api_keys: Callable[[str], set[str]] = _parse_api_keys):
-    async def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
+    async def require_api_key(
+        request: Request,
+        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    ) -> None:
         if not settings.api_keys:
             return
 
@@ -68,21 +83,24 @@ def api_key_guard_factory(parse_api_keys: Callable[[str], set[str]] = _parse_api
         if not accepted_keys:
             return
 
+        client_ip  = request.client.host if request.client else None
         key_provided = x_api_key or ""
-        identifier = key_provided[:8] or "anonymous"
-        if _is_locked_out(identifier):
+        identifier   = key_provided[:8] or "anonymous"
+
+        if _is_locked_out(identifier, client_ip):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="too_many_auth_failures",
                 headers={"Retry-After": "60"},
             )
-        key_valid = any(hmac.compare_digest(key_provided, k) for k in accepted_keys)
 
+        key_valid = any(hmac.compare_digest(key_provided, k) for k in accepted_keys)
         if not key_provided or not key_valid:
-            _record_failure(identifier)
+            _record_failure(identifier, client_ip)
             logger.warning(
                 "auth_failed",
-                extra={"key_prefix": key_provided[:4] if key_provided else None, "detail": "invalid_or_missing_api_key"},
+                extra={"key_prefix": key_provided[:4] if key_provided else None,
+                       "client_ip": client_ip},
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
