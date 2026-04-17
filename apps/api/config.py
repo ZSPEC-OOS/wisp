@@ -12,7 +12,8 @@ class Settings(BaseSettings):
     config_file: str = ""  # path to a JSON file whose keys override env vars
     env: str = "dev"
     db_url: str = "sqlite+aiosqlite:///./wisp.db"
-    redis_url: str = ""            # e.g. "redis://localhost:6379" — enables distributed rate limiting
+    redis_url: str = ""            # e.g. "redis://localhost:6379" — enables distributed cache + rate limiting
+    cache_key_prefix: str = "wisp:cache:"
     http_timeout: int = 12
     user_agent: str = "WISPBot/0.1 (+https://localhost)"
     cache_ttl_seconds: int = 900
@@ -27,6 +28,7 @@ class Settings(BaseSettings):
     s2_api_key: str = ""             # Optional Semantic Scholar key (higher rate limits)
     academic_max_results: int = 4    # Results per academic provider
     searxng_url: str = ""            # e.g. "http://localhost:8080" — self-hosted SearXNG instance
+    brave_api_key: str = ""          # Brave Search API key — enables high-quality direct web search
 
     # Per-phase timeouts for the research pipeline
     search_timeout_seconds:  float = 15.0   # per search call inside /research

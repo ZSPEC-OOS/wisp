@@ -171,6 +171,17 @@ async def _startup_checks() -> None:
         from packages.search.pipeline import _load_embedder
         _load_embedder()
 
+    if settings.redis_url:
+        try:
+            import redis.asyncio as _aioredis
+            _r = await _aioredis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+            await _r.ping()
+            info = await _r.info("server")
+            await _r.aclose()
+            _startup_logger.info("redis_connected", extra={"version": info.get("redis_version"), "url": settings.redis_url.split("@")[-1]})
+        except Exception as exc:
+            _startup_logger.warning("redis_unreachable", extra={"url": settings.redis_url.split("@")[-1], "error": str(exc), "note": "Cache and rate limiting will fall back to in-process mode"})
+
     from packages.storage.database import init_db
     await init_db()
 
@@ -185,7 +196,7 @@ async def _start_cache_metrics_updater() -> None:
 
     async def _update_loop() -> None:
         while True:
-            stats = _cache.stats()
+            stats = await _cache.stats()
             CACHE_SIZE.set(stats["size"])
             CACHE_HIT_RATE.set(stats["hit_rate"])
             await asyncio.sleep(30)
@@ -195,7 +206,7 @@ async def _start_cache_metrics_updater() -> None:
 
 @app.on_event("shutdown")
 async def _shutdown_cleanup() -> None:
-    from apps.api.dependencies.services import _llm_client, cache as _cache, extract_service as _extract_service
+    from apps.api.dependencies.services import _llm_client, _web_provider, cache as _cache, extract_service as _extract_service
     from apps.api.dependencies.rate_limit import _limiter
     from packages.storage.database import close_db
 
@@ -210,6 +221,12 @@ async def _shutdown_cleanup() -> None:
     except Exception:
         pass
 
+    if hasattr(_web_provider, "aclose"):
+        try:
+            await _web_provider.aclose()
+        except Exception:
+            pass
+
     try:
         await _limiter.aclose()
     except Exception:
@@ -220,7 +237,7 @@ async def _shutdown_cleanup() -> None:
     except Exception:
         pass
 
-    pruned = _cache._prune_expired()
+    pruned = await _cache._prune_expired()
     _startup_logger.info("wisp_shutdown", extra={"cache_pruned": pruned})
 
 

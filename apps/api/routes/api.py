@@ -158,7 +158,7 @@ async def readyz() -> Response:
 async def health() -> HealthResponse:
     """Detailed health — checks cache, LLM, and search provider."""
     import httpx as _httpx
-    stats = cache.stats()
+    stats = await cache.stats()
     checks: dict[str, dict] = {"cache": {"status": "ok", "size": stats["size"]}}
 
     if settings.searxng_url:
@@ -196,7 +196,7 @@ async def metrics() -> Response:
 async def extract(payload: ExtractRequest) -> ExtractResponse:
     REQ_COUNTER.labels(endpoint="extract").inc()
     key = f"extract:{','.join(sorted(str(u) for u in payload.urls))}:{payload.format}:{payload.include_images}"
-    cached = cache.get(key)
+    cached = await cache.get(key)
     if cached:
         CACHE_HITS.labels(endpoint="extract").inc()
         return ExtractResponse(**cached)
@@ -220,7 +220,7 @@ async def extract(payload: ExtractRequest) -> ExtractResponse:
         failure_count=failure_count,
     )
     if failure_count == 0:
-        cache.set(key, body.model_dump(mode="json"), ttl=3600)
+        await cache.set(key, body.model_dump(mode="json"), ttl=3600)
     return body
 
 
@@ -233,7 +233,7 @@ async def search(payload: SearchRequest) -> SearchResponse:
         f":{','.join(sorted(payload.allowed_domains or []))}"
         f":{','.join(sorted(payload.blocked_domains or []))}"
     )
-    cached = cache.get(key)
+    cached = await cache.get(key)
     if cached:
         CACHE_HITS.labels(endpoint="search").inc()
         return SearchResponse(**cached)
@@ -294,7 +294,7 @@ async def search(payload: SearchRequest) -> SearchResponse:
         warnings=warnings or None,
     )
     if not warnings:
-        cache.set(key, body.model_dump(mode="json"))
+        await cache.set(key, body.model_dump(mode="json"))
     asyncio.create_task(_persist_search(payload.query))
     return body
 
@@ -306,7 +306,7 @@ async def crawl(payload: CrawlRequest) -> CrawlResponse:
         f"crawl:{payload.seed_url}:{payload.max_pages}:{payload.max_depth}:{payload.concurrency}"
         f":{','.join(sorted(payload.allowed_domains or []))}"
     )
-    cached = cache.get(key)
+    cached = await cache.get(key)
     if cached:
         CACHE_HITS.labels(endpoint="crawl").inc()
         return CrawlResponse(**cached)
@@ -327,7 +327,7 @@ async def crawl(payload: CrawlRequest) -> CrawlResponse:
         CRAWL_FAILURES.labels(reason=reason).inc()
 
     body = CrawlResponse(**out)
-    cache.set(key, out, ttl=300)
+    await cache.set(key, out, ttl=300)
     return body
 
 
@@ -352,7 +352,7 @@ async def research(payload: ResearchRequest) -> ResearchResponse:
         f":{','.join(sorted(payload.allowed_domains or []))}"
         f":{','.join(sorted(payload.blocked_domains or []))}"
     )
-    cached = cache.get(key)
+    cached = await cache.get(key)
     if cached:
         CACHE_HITS.labels(endpoint="research").inc()
         return ResearchResponse(**cached)
@@ -401,7 +401,7 @@ async def research(payload: ResearchRequest) -> ResearchResponse:
         LLM_USED_RATIO.set(_llm_req_used / _llm_req_total)
 
         body = ResearchResponse(**out)
-        cache.set(key, body.model_dump(mode="json"))
+        await cache.set(key, body.model_dump(mode="json"))
         asyncio.create_task(_persist_research(payload.query, payload.mode, out))
         return body
     except Exception as exc:
