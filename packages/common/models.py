@@ -21,6 +21,7 @@ class SearchResult(BaseModel):
     rank: int
     provider: str
     retrieved_at: datetime
+    published_date: datetime | None = None  # actual content publish date when available
     trust_score: float = 0.5
     freshness_score: float = 0.5
     relevance_score: float = 0.0

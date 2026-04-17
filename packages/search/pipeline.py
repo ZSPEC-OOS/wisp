@@ -92,15 +92,21 @@ def _bm25_snippet_scores(query: str, results: list[SearchResult]) -> list[float]
 
 def score_result(result: SearchResult) -> SearchResult:
     trust = trust_weight(result.source_domain)
-    current_year = datetime.now(timezone.utc).year
+    now = datetime.now(timezone.utc)
+
     if result.publication_year:
-        # Use actual publication year for academic content (10-year decay)
-        years_old = current_year - result.publication_year
+        # Academic content: decay over 10 years from publication year
+        years_old = now.year - result.publication_year
         freshness = max(0.2, 1.0 - (years_old / 10.0))
+    elif result.published_date is not None:
+        # Web content with a known publish date: 90-day decay
+        days_old = (now - result.published_date).days
+        freshness = max(0.1, 1.0 - (days_old / 90.0))
     else:
-        # For web pages: use retrieved_at as proxy for content freshness
-        days_old = (datetime.now(timezone.utc) - result.retrieved_at).days
-        freshness = max(0.1, 1.0 - (days_old / 30))
+        # No publish date available — use a neutral score rather than
+        # treating retrieved_at (= now) as a proxy, which always gave 1.0.
+        freshness = 0.5
+
     result.trust_score = trust
     result.freshness_score = freshness
     return result
