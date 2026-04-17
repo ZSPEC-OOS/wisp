@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 
@@ -9,6 +10,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from packages.common.models import SearchResult
 from packages.common.url import domain_of
+
+_logger = logging.getLogger("wisp.search")
 
 
 _TOPIC_SITE_FILTERS: dict[str, str] = {
@@ -48,7 +51,8 @@ class DuckDuckGoProvider(SearchProvider):
         async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=True) as client:
             try:
                 data = await self._call_api(client, url, params)
-            except Exception:
+            except Exception as exc:
+                _logger.warning("ddg_api_failed", extra={"query": query, "error": str(exc)})
                 data = {}
 
         topics = data.get("RelatedTopics", [])
@@ -110,8 +114,8 @@ class DuckDuckGoProvider(SearchProvider):
                             retrieved_at=datetime.now(timezone.utc),
                         )
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.warning("ddg_html_fallback_failed", extra={"query": query, "error": str(exc)})
 
         return rows
 
@@ -133,7 +137,8 @@ class SearXNGProvider(SearchProvider):
                 r = await client.get(f"{self.base_url}/search", params=params)
                 r.raise_for_status()
                 data = r.json()
-        except Exception:
+        except Exception as exc:
+            _logger.warning("searxng_search_failed", extra={"query": query, "url": self.base_url, "error": str(exc)})
             return []
 
         results = []

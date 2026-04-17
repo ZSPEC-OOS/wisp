@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import deque
 from urllib import robotparser
 from urllib.parse import urljoin, urlparse
@@ -10,6 +11,8 @@ from bs4 import BeautifulSoup
 
 from packages.common.url import canonicalize_url, domain_of
 from packages.extract.service import ExtractService
+
+_logger = logging.getLogger("wisp.crawl")
 
 
 class CrawlService:
@@ -34,8 +37,8 @@ class CrawlService:
         try:
             rp.read()
             crawl_delay = rp.crawl_delay(self.extractor.user_agent) or 0.0
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("robots_txt_unavailable", extra={"seed": seed, "error": str(exc)})
 
         visited: set[str] = set()
         q: deque[tuple[str, int]] = deque([(seed, 0)])
@@ -64,8 +67,8 @@ class CrawlService:
                                     if child_resp.status_code == 200:
                                         cs = BeautifulSoup(child_resp.text, "lxml-xml")
                                         return [canonicalize_url(loc.text.strip()) for loc in cs.find_all("loc")]
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    _logger.debug("child_sitemap_failed", extra={"url": child_url, "error": str(exc)})
                                 return []
 
                             child_results = await asyncio.gather(*[_fetch_child(u) for u in child_locs[:5]])
@@ -78,8 +81,8 @@ class CrawlService:
                                 loc_url = canonicalize_url(loc.text.strip())
                                 if loc_url and domain_of(loc_url) in allow and loc_url not in visited:
                                     q.append((loc_url, 0))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.debug("sitemap_fetch_failed", extra={"url": sitemap_url, "error": str(exc)})
 
             sem = asyncio.Semaphore(concurrency)
 
@@ -113,6 +116,7 @@ class CrawlService:
                         if crawl_delay > 0:
                             await asyncio.sleep(crawl_delay)
                     except Exception as exc:
+                        _logger.warning("page_fetch_failed", extra={"url": url, "depth": depth, "error": str(exc)})
                         failures.append({"url": url, "error": str(exc)})
 
             # Process in batches of crawl concurrency

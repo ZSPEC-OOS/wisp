@@ -79,14 +79,73 @@ _research_rate_limit = make_rate_limit_dep(lambda: settings.research_rate_limit_
 _crawl_rate_limit = make_rate_limit_dep(lambda: settings.crawl_rate_limit_per_minute)
 
 
+@public_router.get("/livez")
+async def livez() -> Response:
+    """Liveness probe — returns 200 as long as the process is running."""
+    return Response(content='{"status":"alive"}', media_type="application/json")
+
+
+@public_router.get("/readyz")
+async def readyz() -> Response:
+    """Readiness probe — checks that required dependencies are reachable."""
+    import httpx as _httpx
+    checks: dict[str, str] = {}
+
+    if settings.searxng_url:
+        try:
+            async with _httpx.AsyncClient(timeout=2.0) as c:
+                r = await c.get(f"{settings.searxng_url}/healthz")
+            checks["searxng"] = "ok" if r.status_code < 400 else "degraded"
+        except Exception:
+            checks["searxng"] = "unreachable"
+
+    if settings.llm_enabled:
+        try:
+            async with _httpx.AsyncClient(timeout=2.0) as c:
+                r = await c.get(f"{settings.llm_base_url}/models")
+            checks["llm"] = "ok" if r.status_code < 400 else "degraded"
+        except Exception:
+            checks["llm"] = "unreachable"
+
+    degraded = any(v != "ok" for v in checks.values())
+    status_code = 503 if degraded else 200
+    return Response(
+        content=f'{{"status":"{"degraded" if degraded else "ready"}","checks":{__import__("json").dumps(checks)}}}',
+        media_type="application/json",
+        status_code=status_code,
+    )
+
+
 @public_router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
+    """Detailed health — checks cache, LLM, and search provider."""
+    import httpx as _httpx
     stats = cache.stats()
+    checks: dict[str, dict] = {"cache": {"status": "ok", "size": stats["size"]}}
+
+    if settings.searxng_url:
+        try:
+            async with _httpx.AsyncClient(timeout=2.0) as c:
+                r = await c.get(f"{settings.searxng_url}/healthz")
+            checks["searxng"] = {"status": "ok" if r.status_code < 400 else "degraded"}
+        except Exception as exc:
+            checks["searxng"] = {"status": "unreachable", "error": str(exc)[:120]}
+
+    if settings.llm_enabled:
+        try:
+            async with _httpx.AsyncClient(timeout=2.0) as c:
+                r = await c.get(f"{settings.llm_base_url}/models")
+            checks["llm"] = {"status": "ok" if r.status_code < 400 else "degraded"}
+        except Exception as exc:
+            checks["llm"] = {"status": "unreachable", "error": str(exc)[:120]}
+
+    overall = "ok" if all(v.get("status") == "ok" for v in checks.values()) else "degraded"
     return HealthResponse(
-        status="ok",
+        status=overall,
         version="1.0.0",
         cache_size=stats["size"],
         cache_max_size=stats["max_size"],
+        checks=checks,
     )
 
 

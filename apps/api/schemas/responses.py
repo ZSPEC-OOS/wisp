@@ -13,6 +13,7 @@ class HealthResponse(BaseModel):
     version: str = "1.0.0"
     cache_size: int = 0
     cache_max_size: int = 0
+    checks: dict | None = None
 
 
 class SearchResponse(BaseModel):

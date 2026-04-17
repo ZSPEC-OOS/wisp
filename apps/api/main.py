@@ -118,6 +118,8 @@ app.include_router(legacy_router)
 
 @app.on_event("startup")
 async def _startup_checks() -> None:
+    import httpx as _httpx
+    from urllib.parse import urlparse
     from apps.api.dependencies.auth import _parse_api_keys, validate_api_key_format
 
     if settings.rate_limit_per_minute > 0:
@@ -146,6 +148,25 @@ async def _startup_checks() -> None:
             extra={"note": "llm_enabled=True but WISP_LLM_API_KEY is not set — LLM synthesis will fail at runtime"},
         )
 
+    if settings.searxng_url:
+        parsed = urlparse(settings.searxng_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            _startup_logger.error(
+                "searxng_url_invalid",
+                extra={"url": settings.searxng_url, "note": "WISP_SEARXNG_URL must be a valid http/https URL"},
+            )
+        else:
+            try:
+                async with _httpx.AsyncClient(timeout=3.0) as c:
+                    await c.get(f"{settings.searxng_url}/healthz")
+                _startup_logger.info("searxng_reachable", extra={"url": settings.searxng_url})
+            except Exception as exc:
+                _startup_logger.warning(
+                    "searxng_unreachable",
+                    extra={"url": settings.searxng_url, "error": str(exc),
+                           "note": "Search will degrade to DuckDuckGo fallback"},
+                )
+
     if settings.enable_embeddings:
         from packages.search.pipeline import _load_embedder
         _load_embedder()
@@ -171,7 +192,12 @@ async def _start_cache_metrics_updater() -> None:
 
 @app.on_event("shutdown")
 async def _shutdown_cleanup() -> None:
-    from apps.api.dependencies.services import cache as _cache
+    from apps.api.dependencies.services import _llm_client, cache as _cache
+    if _llm_client is not None:
+        try:
+            await _llm_client.aclose()
+        except Exception:
+            pass
     pruned = _cache._prune_expired()
     _startup_logger.info("wisp_shutdown", extra={"cache_pruned": pruned})
 
