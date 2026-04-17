@@ -60,6 +60,9 @@ class _InMemoryLimiter:
                     headers={"Retry-After": retry_after},
                 )
 
+    async def aclose(self) -> None:
+        pass
+
 
 # ── Redis sliding-window rate limiter (multi-worker safe) ────────────────────
 
@@ -92,13 +95,14 @@ class _RedisLimiter:
     async def check(self, key: str, rpm: int) -> None:
         try:
             r = await self._get_redis()
-            minute_bucket = int(time.time() // 60)
+            now = time.time()
+            minute_bucket = int(now // 60)
             redis_key = f"rl:{key}:{minute_bucket}"
             count = await r.incr(redis_key)
             if count == 1:
                 await r.expire(redis_key, 120)  # 2-minute TTL covers boundary bursts
             if count > rpm:
-                seconds_left = 60 - int(time.time() % 60)
+                seconds_left = 60 - int(now % 60)
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail="rate_limit_exceeded",
