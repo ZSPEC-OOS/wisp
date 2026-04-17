@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from urllib.parse import urlparse
 
 from packages.crawl.service import CrawlService
 
@@ -13,7 +14,9 @@ class MapService:
         data = await self.crawler.crawl(seed_url=seed_url, max_pages=max_pages, max_depth=max_depth)
         clusters = defaultdict(list)
         for n in data["nodes"]:
-            path_bucket = n["url"].split("/")[3] if len(n["url"].split("/")) > 3 else "root"
+            parsed = urlparse(n["url"])
+            parts = [p for p in parsed.path.split("/") if p]
+            path_bucket = parts[0] if parts else "root"
             clusters[path_bucket].append(n["url"])
         return {
             "nodes": data["nodes"],

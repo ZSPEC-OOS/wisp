@@ -32,10 +32,12 @@ class LlmSynthesisClient:
     """
 
     def __init__(self) -> None:
+        # connect/write/pool have hard caps so a TCP hang doesn't bypass asyncio.wait_for.
+        # read stays None — the per-mode asyncio.wait_for budget governs response time.
         self._http = httpx.AsyncClient(
             base_url=settings.llm_base_url,
             headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-            timeout=None,
+            timeout=httpx.Timeout(connect=5.0, read=None, write=10.0, pool=5.0),
         )
 
     async def aclose(self) -> None:

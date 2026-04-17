@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import Counter as _Counter
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -121,7 +122,8 @@ async def extract(payload: ExtractRequest) -> ExtractResponse:
         success_count=success_count,
         failure_count=failure_count,
     )
-    cache.set(key, body.model_dump(mode="json"), ttl=3600)
+    if failure_count == 0:
+        cache.set(key, body.model_dump(mode="json"), ttl=3600)
     return body
 
 
@@ -166,7 +168,14 @@ async def search(payload: SearchRequest) -> SearchResponse:
     warnings: list[str] = []
 
     if payload.include_answer and results:
-        docs = await extract_service.extract_many([str(r.url) for r in results[:3]], format="text")
+        try:
+            docs = await asyncio.wait_for(
+                extract_service.extract_many([str(r.url) for r in results[:3]], format="text"),
+                timeout=15.0,
+            )
+        except asyncio.TimeoutError:
+            docs = []
+            warnings.append("Quick-answer extraction timed out.")
         passages = []
         for doc in docs:
             if doc.status != "ok":
@@ -187,7 +196,8 @@ async def search(payload: SearchRequest) -> SearchResponse:
         extracted=extracted,
         warnings=warnings or None,
     )
-    cache.set(key, body.model_dump(mode="json"))
+    if not warnings:
+        cache.set(key, body.model_dump(mode="json"))
     return body
 
 

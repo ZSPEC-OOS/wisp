@@ -35,17 +35,30 @@ def _extract_pdf_text(raw_bytes: bytes) -> str:
     return "\n\n".join(parts)
 
 
-def _dedup_passages(passages: list[Passage]) -> list[Passage]:
-    """Remove near-duplicate passages where one is a substring of another."""
-    seen: list[str] = []
-    out = []
+def _shingle(text: str, k: int = 6) -> frozenset[str]:
+    """Return a set of k-word shingles for Jaccard-based near-dedup."""
+    words = text.lower().split()
+    if len(words) <= k:
+        return frozenset([" ".join(words)])
+    return frozenset(" ".join(words[i : i + k]) for i in range(len(words) - k + 1))
+
+
+def _dedup_passages(passages: list[Passage], threshold: float = 0.5) -> list[Passage]:
+    """Remove near-duplicate passages using Jaccard similarity on word shingles."""
+    kept_shingles: list[frozenset[str]] = []
+    out: list[Passage] = []
     for p in passages:
         text = p.text.strip()
-        # Skip if text is a substring of any already-kept passage, or vice-versa
-        if any(text in s or s in text for s in seen):
-            continue
-        seen.append(text)
-        out.append(p)
+        shingles = _shingle(text)
+        duplicate = False
+        for kept in kept_shingles:
+            union = shingles | kept
+            if union and len(shingles & kept) / len(union) >= threshold:
+                duplicate = True
+                break
+        if not duplicate:
+            kept_shingles.append(shingles)
+            out.append(p)
     return out
 
 
