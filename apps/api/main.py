@@ -67,8 +67,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if request.url.scheme == "https":
             response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
         # Remove headers that reveal the server stack to attackers
-        response.headers.pop("server", None)
-        response.headers.pop("x-powered-by", None)
+        for _h in ("server", "x-powered-by"):
+            if _h in response.headers:
+                del response.headers[_h]
         return response
 
 

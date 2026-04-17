@@ -29,17 +29,24 @@ def test_extract_contract_validation():
 
 
 def test_api_key_enforcement(monkeypatch):
+    from apps.api.dependencies.auth import require_api_key
     from apps.api.dependencies import auth
 
-    monkeypatch.setattr(auth.settings, "api_keys", "test-key")
-    unauthorized = client.post("/search", json={"query": "wisp", "max_results": 1})
-    assert unauthorized.status_code == 401
+    test_key = "TestKey!42abcdef"
+    monkeypatch.setattr(auth.settings, "api_keys", test_key)
+    enforcing_guard = auth.api_key_guard_factory(parse_api_keys=lambda _: {test_key})
 
-    authorized = client.post(
-        "/search",
-        json={"query": "wisp", "max_results": 1},
-        headers={"X-API-Key": "test-key"},
-    )
-    assert authorized.status_code == 200
+    try:
+        app.dependency_overrides[require_api_key] = enforcing_guard
 
-    monkeypatch.setattr(auth.settings, "api_keys", "")
+        unauthorized = client.post("/v1/search", json={"query": "wisp", "max_results": 1})
+        assert unauthorized.status_code == 401
+
+        authorized = client.post(
+            "/v1/search",
+            json={"query": "wisp", "max_results": 1},
+            headers={"X-API-Key": test_key},
+        )
+        assert authorized.status_code == 200
+    finally:
+        app.dependency_overrides.pop(require_api_key, None)
