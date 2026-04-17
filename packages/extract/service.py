@@ -78,6 +78,29 @@ class ExtractService:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def _playwright_extract(self, url: str) -> str | None:
+        """Render URL with headless Chromium; returns raw HTML or None if unavailable."""
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            return None
+        try:
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(headless=True)
+                try:
+                    page = await browser.new_page(
+                        user_agent=self.user_agent,
+                        extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                    )
+                    await page.goto(url, wait_until="networkidle", timeout=20_000)
+                    html = await page.content()
+                    return html
+                finally:
+                    await browser.close()
+        except Exception as exc:
+            _logger.warning("playwright_extract_failed", extra={"url": url, "error": str(exc)})
+            return None
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=4))
     async def _fetch(self, url: str) -> httpx.Response:
         response = await self._client.get(url)
@@ -90,12 +113,57 @@ class ExtractService:
             )
         return response
 
-    async def extract_url(self, url: str, format: str = "markdown", include_images: bool = False) -> ExtractedDocument:
+    async def extract_url(self, url: str, format: str = "markdown", include_images: bool = False, js_render: bool = False) -> ExtractedDocument:
         t0 = time.perf_counter()
         try:
             response = await self._fetch(url)
             content_type = response.headers.get("content-type", "")
             is_pdf = "application/pdf" in content_type or url.lower().endswith(".pdf")
+
+            # JS rendering: after detecting content type, re-fetch with Playwright for
+            # dynamically-rendered pages (React, Vue, etc.) that httpx cannot see.
+            if js_render and not is_pdf:
+                rendered = await self._playwright_extract(url)
+                if rendered:
+                    body = rendered
+                    md = trafilatura.extract(
+                        body,
+                        output_format="markdown" if format == "markdown" else "txt",
+                        include_images=include_images,
+                        include_comments=False,
+                        include_tables=True,
+                    )
+                    if not md:
+                        soup = BeautifulSoup(body, "lxml")
+                        md = soup.get_text("\n", strip=True)
+                    raw_passages = [
+                        Passage(text=p.strip(), source_url=response.url)
+                        for p in (md or "").split("\n\n")
+                        if len(p.strip()) > 40
+                    ]
+                    passages = _dedup_passages(raw_passages)[:20]
+                    meta = trafilatura.extract_metadata(body)
+                    title = meta.title if meta else None
+                    published = None
+                    if meta and meta.date:
+                        try:
+                            published = datetime.fromisoformat(meta.date)
+                        except ValueError:
+                            pass
+                    _logger.debug("extracted_js", extra={"url": url, "passages": len(passages),
+                                                          "duration_ms": round((time.perf_counter() - t0) * 1000, 1)})
+                    return ExtractedDocument(
+                        url=url,
+                        canonical_url=canonicalize_url(str(response.url)),
+                        title=title,
+                        author=meta.author if meta else None,
+                        published_at=published,
+                        status="ok",
+                        format="markdown" if format == "markdown" else "text",
+                        content=md or "",
+                        passages=passages,
+                        diagnostics={"content_type": content_type, "length": len(body), "js_render": True},
+                    )
 
             if is_pdf and _PYPDF_AVAILABLE:
                 md = _extract_pdf_text(response.content)
@@ -179,13 +247,13 @@ class ExtractService:
                 diagnostics={"error": str(exc)},
             )
 
-    async def _extract_url_with_semaphore(self, url: str, format: str, include_images: bool) -> ExtractedDocument:
+    async def _extract_url_with_semaphore(self, url: str, format: str, include_images: bool, js_render: bool) -> ExtractedDocument:
         async with _EXTRACT_SEMAPHORE:
-            return await self.extract_url(url, format=format, include_images=include_images)
+            return await self.extract_url(url, format=format, include_images=include_images, js_render=js_render)
 
-    async def extract_many(self, urls: list[str], format: str = "markdown", include_images: bool = False) -> list[ExtractedDocument]:
+    async def extract_many(self, urls: list[str], format: str = "markdown", include_images: bool = False, js_render: bool = False) -> list[ExtractedDocument]:
         return list(
             await asyncio.gather(
-                *[self._extract_url_with_semaphore(url, format=format, include_images=include_images) for url in urls]
+                *[self._extract_url_with_semaphore(url, format=format, include_images=include_images, js_render=js_render) for url in urls]
             )
         )

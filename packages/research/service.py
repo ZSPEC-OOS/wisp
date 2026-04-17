@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 
 from packages.common.models import Citation, ExtractedDocument, Passage, SearchResult
 from packages.extract.service import ExtractService
@@ -109,6 +110,7 @@ class ResearchService:
         allowed_domains: list[str] | None = None,
         blocked_domains: list[str] | None = None,
         synthesis_mode: str | None = None,
+        on_progress: Callable[[str, dict], Awaitable[None]] | None = None,
     ) -> dict:
         t0 = time.perf_counter()
 
@@ -125,6 +127,8 @@ class ResearchService:
 
         for q in queries:
             executed_queries.append(q)
+            if on_progress:
+                await on_progress("searching", {"round": 1, "query": q})
             try:
                 results = await asyncio.wait_for(
                     self.search.search(q, max_results=max_sources),
@@ -177,6 +181,8 @@ class ResearchService:
             if not followup or followup in executed_queries:
                 break
             executed_queries.append(followup)
+            if on_progress:
+                await on_progress("searching", {"round": _round + 1, "query": followup})
             try:
                 followup_results = await asyncio.wait_for(
                     self.search.search(followup, max_results=max_sources),
@@ -221,6 +227,8 @@ class ResearchService:
         extract_urls = [r.oa_pdf_url or str(r.url) for r in top]
         cached_docs  = [_extract_cache[u] for u in extract_urls if u in _extract_cache]
         fresh_urls   = [u for u in extract_urls if u not in _extract_cache]
+        if on_progress:
+            await on_progress("extracting", {"url_count": len(fresh_urls), "cached": len(cached_docs)})
         try:
             fresh_docs: list[ExtractedDocument] = (
                 await asyncio.wait_for(
@@ -288,6 +296,9 @@ class ResearchService:
         llm_latency_ms  = None
         ev_count_sent   = 0
         timeout_budget  = self.llm._resolve_timeout(mode) if self.llm else 0.0
+
+        if on_progress:
+            await on_progress("synthesizing", {"llm": use_llm, "mode": mode, "gate_reason": gate_reason})
 
         if use_llm and self.llm is not None:
             llm_invoked   = True

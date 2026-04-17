@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
+import uuid as _uuid
 from collections import Counter as _Counter
+from datetime import datetime as _datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response, StreamingResponse
 
 from apps.api.config import settings
 from apps.api.dependencies.auth import require_api_key
 from apps.api.dependencies.rate_limit import make_rate_limit_dep, require_rate_limit
 from apps.api.dependencies.services import cache, crawl_service, extract_service, map_service, research_service, search_service
 from apps.api.schemas.requests import CrawlRequest, ExtractRequest, MapRequest, ResearchRequest, SearchRequest
-from apps.api.schemas.responses import CrawlResponse, ExtractResponse, HealthResponse, MapResponse, ResearchResponse, SearchResponse
+from apps.api.schemas.responses import CrawlJobResponse, CrawlResponse, ExtractResponse, HealthResponse, MapResponse, ResearchResponse, SearchResponse
 from packages.search.pipeline import rerank_passages
 
 _db_logger = logging.getLogger("wisp.db_write")
+
+# In-memory async crawl job store: job_id -> {status, created_at, result, error}
+_crawl_jobs: dict[str, dict] = {}
 
 router = APIRouter()
 public_router = APIRouter()
@@ -197,7 +203,7 @@ async def extract(payload: ExtractRequest) -> ExtractResponse:
     CACHE_MISSES.labels(endpoint="extract").inc()
 
     with LATENCY.labels(stage="extract").time():
-        docs = await extract_service.extract_many([str(u) for u in payload.urls], payload.format, payload.include_images)
+        docs = await extract_service.extract_many([str(u) for u in payload.urls], payload.format, payload.include_images, payload.js_render)
 
     success_count = 0
     for doc in docs:
@@ -401,6 +407,102 @@ async def research(payload: ResearchRequest) -> ResearchResponse:
     except Exception as exc:
         ERRORS.labels(endpoint="research", error_type=type(exc).__name__).inc()
         raise HTTPException(status_code=500, detail=f"research_failed: {exc}") from exc
+
+
+@protected_router.post("/research/stream", dependencies=[Depends(_research_rate_limit)])
+async def research_stream(payload: ResearchRequest) -> StreamingResponse:
+    """SSE endpoint that streams research progress events then the final result.
+
+    Events: searching | extracting | synthesizing | done | error
+    Each line is:  event: <name>\\ndata: <json>\\n\\n
+    """
+    queue: asyncio.Queue[tuple[str, dict] | None] = asyncio.Queue()
+
+    async def _on_progress(event: str, data: dict) -> None:
+        await queue.put((event, data))
+
+    async def _run() -> None:
+        try:
+            result = await research_service.run(
+                payload.query,
+                payload.mode,
+                payload.max_sources,
+                max_search_rounds=payload.max_search_rounds,
+                allowed_domains=payload.allowed_domains,
+                blocked_domains=payload.blocked_domains,
+                synthesis_mode=payload.synthesis_mode,
+                on_progress=_on_progress,
+            )
+            await queue.put(("done", result))
+        except Exception as exc:
+            await queue.put(("error", {"detail": str(exc)}))
+        finally:
+            await queue.put(None)
+
+    async def _event_gen():
+        task = asyncio.create_task(_run())
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=120.0)
+                except asyncio.TimeoutError:
+                    yield 'event: error\ndata: {"detail":"stream_timeout"}\n\n'
+                    break
+                if item is None:
+                    break
+                event, data = item
+                yield f"event: {event}\ndata: {_json.dumps(data, default=str)}\n\n"
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(
+        _event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@protected_router.post("/crawl/jobs", response_model=CrawlJobResponse, dependencies=[Depends(_crawl_rate_limit)])
+async def start_crawl_job(payload: CrawlRequest) -> CrawlJobResponse:
+    """Start an async crawl and return a job ID to poll with GET /crawl/jobs/{job_id}."""
+    job_id = _uuid.uuid4().hex
+    created_at = _datetime.utcnow().isoformat()
+    _crawl_jobs[job_id] = {"status": "pending", "created_at": created_at, "result": None, "error": None}
+    REQ_COUNTER.labels(endpoint="crawl_job").inc()
+
+    async def _run_job() -> None:
+        _crawl_jobs[job_id]["status"] = "running"
+        try:
+            out = await crawl_service.crawl(
+                seed_url=str(payload.seed_url),
+                max_pages=payload.max_pages,
+                max_depth=payload.max_depth,
+                allowed_domains=payload.allowed_domains,
+                timeout_seconds=payload.timeout_seconds,
+                concurrency=payload.concurrency,
+            )
+            _crawl_jobs[job_id].update({"status": "done", "result": out})
+        except Exception as exc:
+            _crawl_jobs[job_id].update({"status": "failed", "error": str(exc)})
+
+    asyncio.create_task(_run_job())
+    return CrawlJobResponse(job_id=job_id, status="pending", created_at=created_at)
+
+
+@protected_router.get("/crawl/jobs/{job_id}", response_model=CrawlJobResponse)
+async def get_crawl_job(job_id: str) -> CrawlJobResponse:
+    """Poll the status of an async crawl job."""
+    job = _crawl_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job_not_found")
+    return CrawlJobResponse(
+        job_id=job_id,
+        status=job["status"],
+        created_at=job["created_at"],
+        result=job.get("result"),
+        error=job.get("error"),
+    )
 
 
 router.include_router(public_router)
