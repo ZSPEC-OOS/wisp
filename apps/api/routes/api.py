@@ -15,8 +15,8 @@ from apps.api.config import settings
 from apps.api.dependencies.auth import require_api_key
 from apps.api.dependencies.rate_limit import make_rate_limit_dep, require_rate_limit
 from apps.api.dependencies.services import cache, crawl_service, extract_service, map_service, research_service, search_service
-from apps.api.schemas.requests import CrawlRequest, ExtractRequest, MapRequest, ResearchRequest, SearchRequest
-from apps.api.schemas.responses import CrawlJobResponse, CrawlResponse, ExtractResponse, HealthResponse, MapResponse, ResearchResponse, SearchResponse
+from apps.api.schemas.requests import AcademicRequest, CrawlRequest, ExtractRequest, MapRequest, ResearchRequest, SearchRequest
+from apps.api.schemas.responses import AcademicPaperResult, AcademicResponse, CrawlJobResponse, CrawlResponse, ExtractResponse, HealthResponse, MapResponse, ResearchResponse, SearchResponse
 from packages.search.pipeline import rerank_passages
 
 _db_logger = logging.getLogger("wisp.db_write")
@@ -513,6 +513,61 @@ async def research_stream(payload: ResearchRequest) -> StreamingResponse:
         _event_gen(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@protected_router.post("/academic", response_model=AcademicResponse)
+async def academic(payload: AcademicRequest) -> AcademicResponse:
+    """Prompt → DOI → PDF → text → answer pipeline for academic papers."""
+    REQ_COUNTER.labels(endpoint="academic").inc()
+
+    from packages.academic_pipeline.pipeline import AcademicPipeline, PipelineConfig
+
+    use_scihub = payload.use_scihub and settings.academic_scihub_enabled
+    cfg = PipelineConfig(
+        prompt=payload.prompt,
+        question=payload.question,
+        max_papers=min(payload.max_papers, settings.academic_pipeline_max_papers),
+        use_scihub=use_scihub,
+        output_dir=settings.academic_output_dir,
+        mailto=settings.academic_mailto,
+        s2_api_key=settings.s2_api_key,
+        llm_base_url=settings.llm_base_url if settings.llm_enabled else "",
+        llm_api_key=settings.llm_api_key,
+        llm_model=settings.llm_model if settings.llm_enabled else "",
+        llm_timeout=settings.llm_timeout_seconds,
+    )
+
+    try:
+        with LATENCY.labels(stage="academic").time():
+            pipeline = AcademicPipeline(cfg)
+            results = await pipeline.run()
+    except Exception as exc:
+        ERRORS.labels(endpoint="academic", error_type=type(exc).__name__).inc()
+        raise HTTPException(status_code=500, detail=f"academic_pipeline_failed: {exc}") from exc
+
+    papers = [
+        AcademicPaperResult(
+            title=r.title,
+            doi=r.doi,
+            authors=r.authors,
+            publication_year=r.publication_year,
+            url=r.url,
+            oa_pdf_url=r.oa_pdf_url,
+            pdf_path=r.pdf_path,
+            parse_error=r.parse_error,
+            answer=r.answer,
+            provider=r.provider,
+        )
+        for r in results
+    ]
+    return AcademicResponse(
+        prompt=payload.prompt,
+        question=payload.question,
+        papers=papers,
+        papers_found=len(papers),
+        pdfs_downloaded=sum(1 for p in papers if p.pdf_path),
+        answers_generated=sum(1 for p in papers if p.answer),
     )
 
 

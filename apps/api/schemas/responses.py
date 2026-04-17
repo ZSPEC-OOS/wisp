@@ -67,3 +67,25 @@ class CrawlJobResponse(BaseModel):
     created_at: str
     result: dict | None = None
     error: str | None = None
+
+
+class AcademicPaperResult(BaseModel):
+    title: str
+    doi: str | None = None
+    authors: list[str] = []
+    publication_year: int | None = None
+    url: str
+    oa_pdf_url: str | None = None
+    pdf_path: str | None = None
+    parse_error: str | None = None
+    answer: str | None = None
+    provider: str
+
+
+class AcademicResponse(BaseModel):
+    prompt: str
+    question: str
+    papers: list[AcademicPaperResult]
+    papers_found: int
+    pdfs_downloaded: int
+    answers_generated: int

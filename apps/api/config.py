@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     academic_mailto: str = ""        # Polite-pool email for OpenAlex + CrossRef + Unpaywall
     s2_api_key: str = ""             # Optional Semantic Scholar key (higher rate limits)
     academic_max_results: int = 4    # Results per academic provider
+    # Academic paper pipeline (POST /v1/academic)
+    academic_output_dir: str = "./papers"   # Local directory for downloaded PDFs
+    academic_scihub_enabled: bool = False   # Opt-in Sci-Hub fallback (off by default)
+    academic_pipeline_max_papers: int = 5   # Default max papers per request
     searxng_url: str = ""            # e.g. "http://localhost:8080" — self-hosted SearXNG instance
     brave_api_key: str = ""          # Brave Search API key — enables high-quality direct web search
 

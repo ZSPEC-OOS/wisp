@@ -28,6 +28,11 @@ dependencies = [
 [project.optional-dependencies]
 embeddings = ["sentence-transformers>=3.0"]
 academic = ["pypdf>=4.0"]
+# Full academic paper pipeline: PDF download + richer parsing
+academic-pipeline = [
+  "pypdf>=4.0",
+  "pdfplumber>=0.11",
+]
 # LLM synthesis server (pick one — not required to run WISP itself)
 # vLLM:   pip install -e .[llm-vllm]   then: vllm serve Qwen/Qwen3-8B --port 8001
 # Ollama: install from https://ollama.com then: ollama pull qwen3:8b && ollama serve
@@ -42,6 +47,9 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.11"
 ]
+
+[project.scripts]
+academic-pipeline = "packages.academic_pipeline.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

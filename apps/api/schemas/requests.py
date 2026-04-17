@@ -74,3 +74,10 @@ class ResearchRequest(BaseModel):
     # auto   → gating policy decides based on evidence profile
     # always → call LLM if enabled and available, fall back to native on failure
     synthesis_mode: Literal["never", "auto", "always"] = "auto"
+
+
+class AcademicRequest(BaseModel):
+    prompt: str = Field(min_length=2, description="Natural language research prompt")
+    question: str = Field(default="", description="Follow-up question to answer from each paper")
+    max_papers: int = Field(default=3, ge=1, le=10)
+    use_scihub: bool = Field(default=False, description="Enable Sci-Hub fallback (must be globally enabled in config)")
