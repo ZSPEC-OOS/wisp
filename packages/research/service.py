@@ -134,7 +134,9 @@ class ResearchService:
 
         t_search = time.perf_counter()
 
-        # Prefetch top round-1 results so HTTP requests overlap subsequent rounds
+        # Prefetch top round-1 results so HTTP requests overlap subsequent rounds.
+        # All quick-extracted docs are cached so the final extraction can reuse them.
+        _extract_cache: dict[str, ExtractedDocument] = {}
         _prefetch_top3_urls = [
             str(r.url)
             for r in list({str(r.url): r for r in all_results}.values())[:3]
@@ -158,6 +160,11 @@ class ResearchService:
                     _prefetch_task.cancel()
                 _prefetch_task = None
                 quick_docs = await self.extract.extract_many(top3_urls)
+
+            # Cache results so the final extraction pass can reuse them
+            for d in quick_docs:
+                if d.status == "ok":
+                    _extract_cache[str(d.url)] = d
 
             quick_passages: list[Passage] = []
             for d in quick_docs:
@@ -205,14 +212,20 @@ class ResearchService:
                 result_map[r.oa_pdf_url] = r
 
         extract_urls = [r.oa_pdf_url or str(r.url) for r in top]
+        cached_docs  = [_extract_cache[u] for u in extract_urls if u in _extract_cache]
+        fresh_urls   = [u for u in extract_urls if u not in _extract_cache]
         try:
-            docs: list[ExtractedDocument] = await asyncio.wait_for(
-                self.extract.extract_many(extract_urls),
-                timeout=settings.extract_timeout_seconds,
+            fresh_docs: list[ExtractedDocument] = (
+                await asyncio.wait_for(
+                    self.extract.extract_many(fresh_urls),
+                    timeout=settings.extract_timeout_seconds,
+                )
+                if fresh_urls else []
             )
         except asyncio.TimeoutError:
             logger.warning("Main extraction timed out after %ss", settings.extract_timeout_seconds)
-            docs = []
+            fresh_docs = []
+        docs = cached_docs + fresh_docs
 
         t_extract = time.perf_counter()
 

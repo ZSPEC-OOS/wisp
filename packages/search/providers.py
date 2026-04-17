@@ -137,10 +137,18 @@ class SearXNGProvider(SearchProvider):
             return []
 
         results = []
+        now = datetime.now(timezone.utc)
         for i, item in enumerate(data.get("results", [])[:max_results], start=1):
             url = item.get("url", "")
             if not url:
                 continue
+            published_date = None
+            raw_date = item.get("publishedDate") or item.get("published_date")
+            if raw_date:
+                try:
+                    published_date = datetime.fromisoformat(raw_date.rstrip("Z")).replace(tzinfo=timezone.utc)
+                except (ValueError, AttributeError):
+                    pass
             results.append(SearchResult(
                 title=item.get("title", url),
                 url=url,
@@ -148,6 +156,7 @@ class SearXNGProvider(SearchProvider):
                 source_domain=domain_of(url),
                 rank=i,
                 provider=self.name,
-                retrieved_at=datetime.now(timezone.utc),
+                retrieved_at=now,
+                published_date=published_date,
             ))
         return results

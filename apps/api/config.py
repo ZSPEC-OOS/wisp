@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # Inference endpoint
     llm_base_url: str  = "http://localhost:8001/v1"
-    llm_api_key:  str  = "dev-token"
+    llm_api_key:  str  = ""       # must be set when llm_enabled=True
     llm_model:    str  = "Qwen/Qwen3-8B"
 
     # Latency budgets — per-mode overrides take precedence over llm_timeout_seconds.

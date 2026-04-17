@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
+
+from packages.common.url import validate_safe_url
 
 
 class SearchRequest(BaseModel):
@@ -24,6 +26,13 @@ class ExtractRequest(BaseModel):
     include_images: bool = False
     timeout_seconds: int = Field(default=12, ge=2, le=90)
 
+    @field_validator("urls", mode="before")
+    @classmethod
+    def urls_must_be_safe(cls, v: list) -> list:
+        for url in v:
+            validate_safe_url(str(url))
+        return v
+
 
 class CrawlRequest(BaseModel):
     seed_url: HttpUrl
@@ -34,11 +43,23 @@ class CrawlRequest(BaseModel):
     allowed_domains: list[str] | None = None
     timeout_seconds: int = Field(default=10, ge=2, le=60)
 
+    @field_validator("seed_url", mode="before")
+    @classmethod
+    def seed_url_must_be_safe(cls, v) -> str:
+        validate_safe_url(str(v))
+        return v
+
 
 class MapRequest(BaseModel):
     seed_url: HttpUrl
     max_pages: int = Field(default=20, ge=1, le=500)
     max_depth: int = Field(default=2, ge=0, le=6)
+
+    @field_validator("seed_url", mode="before")
+    @classmethod
+    def seed_url_must_be_safe(cls, v) -> str:
+        validate_safe_url(str(v))
+        return v
 
 
 class ResearchRequest(BaseModel):

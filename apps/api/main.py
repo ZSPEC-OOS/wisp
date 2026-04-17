@@ -24,7 +24,11 @@ _startup_logger = logging.getLogger("wisp.startup")
 
 
 class MaxBodySizeMiddleware(BaseHTTPMiddleware):
-    """Reject request bodies larger than max_bytes with HTTP 413."""
+    """Reject request bodies larger than max_bytes with HTTP 413.
+
+    Enforces the limit on the actual stream so attackers cannot bypass it by
+    omitting or falsifying the Content-Length header.
+    """
 
     def __init__(self, app, max_bytes: int = 1_048_576):
         super().__init__(app)
@@ -33,14 +37,22 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.method in {"POST", "PUT", "PATCH"}:
             content_length = request.headers.get("content-length")
+            _too_large = JSONResponse(
+                status_code=413,
+                content={"error": "request_too_large", "detail": f"Body exceeds {self.max_bytes} bytes"},
+            )
+            # Fast path: Content-Length header present and already over limit
             if content_length and int(content_length) > self.max_bytes:
-                return JSONResponse(
-                    status_code=413,
-                    content={
-                        "error": "request_too_large",
-                        "detail": f"Body exceeds {self.max_bytes} bytes",
-                    },
-                )
+                return _too_large
+            # Stream enforcement: count bytes as they arrive
+            if not content_length:
+                body = b""
+                async for chunk in request.stream():
+                    body += chunk
+                    if len(body) > self.max_bytes:
+                        return _too_large
+                # Cache the consumed body so FastAPI can still read it downstream
+                request._body = body
         return await call_next(request)
 
 
@@ -54,6 +66,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
         if request.url.scheme == "https":
             response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+        # Remove headers that reveal the server stack to attackers
+        response.headers.pop("server", None)
+        response.headers.pop("x-powered-by", None)
         return response
 
 
@@ -124,6 +139,12 @@ async def _startup_checks() -> None:
                     "weak_api_key_detected",
                     extra={"key_length": len(key), "min_required": 16},
                 )
+
+    if settings.llm_enabled and not settings.llm_api_key:
+        _startup_logger.error(
+            "llm_key_missing",
+            extra={"note": "llm_enabled=True but WISP_LLM_API_KEY is not set — LLM synthesis will fail at runtime"},
+        )
 
     if settings.enable_embeddings:
         from packages.search.pipeline import _load_embedder
