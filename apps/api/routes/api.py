@@ -5,7 +5,7 @@ import json as _json
 import logging
 import uuid as _uuid
 from collections import Counter as _Counter
-from datetime import datetime as _datetime
+from datetime import datetime as _datetime, timezone as _tz
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -90,7 +90,7 @@ _crawl_rate_limit = make_rate_limit_dep(lambda: settings.crawl_rate_limit_per_mi
 
 # ── Fire-and-forget DB write helpers ─────────────────────────────────────────
 
-async def _persist_search(query: str, result_count: int) -> None:
+async def _persist_search(query: str) -> None:
     try:
         from packages.storage.database import get_session
         from packages.storage.models import Query
@@ -295,7 +295,7 @@ async def search(payload: SearchRequest) -> SearchResponse:
     )
     if not warnings:
         cache.set(key, body.model_dump(mode="json"))
-    asyncio.create_task(_persist_search(payload.query, len(results)))
+    asyncio.create_task(_persist_search(payload.query))
     return body
 
 
@@ -466,9 +466,16 @@ async def research_stream(payload: ResearchRequest) -> StreamingResponse:
 @protected_router.post("/crawl/jobs", response_model=CrawlJobResponse, dependencies=[Depends(_crawl_rate_limit)])
 async def start_crawl_job(payload: CrawlRequest) -> CrawlJobResponse:
     """Start an async crawl and return a job ID to poll with GET /crawl/jobs/{job_id}."""
+    # Prune completed jobs older than 1 hour so the dict doesn't grow unbounded
+    cutoff = _datetime.now(_tz.utc).timestamp() - 3600
+    stale = [jid for jid, j in _crawl_jobs.items()
+             if j["status"] in ("done", "failed") and j.get("ts", 0) < cutoff]
+    for jid in stale:
+        del _crawl_jobs[jid]
+
     job_id = _uuid.uuid4().hex
-    created_at = _datetime.utcnow().isoformat()
-    _crawl_jobs[job_id] = {"status": "pending", "created_at": created_at, "result": None, "error": None}
+    created_at = _datetime.now(_tz.utc).isoformat()
+    _crawl_jobs[job_id] = {"status": "pending", "created_at": created_at, "result": None, "error": None, "ts": _datetime.now(_tz.utc).timestamp()}
     REQ_COUNTER.labels(endpoint="crawl_job").inc()
 
     async def _run_job() -> None:

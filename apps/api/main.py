@@ -210,11 +210,10 @@ async def _shutdown_cleanup() -> None:
     except Exception:
         pass
 
-    if hasattr(_limiter, "aclose"):
-        try:
-            await _limiter.aclose()
-        except Exception:
-            pass
+    try:
+        await _limiter.aclose()
+    except Exception:
+        pass
 
     try:
         await close_db()

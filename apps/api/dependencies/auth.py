@@ -28,13 +28,17 @@ def _prune(attempts: list[float], now: float) -> list[float]:
 
 def _record_failure(identifier: str, client_ip: str | None) -> None:
     now = time.monotonic()
-    attempts = _failed_attempts.setdefault(identifier, [])
-    attempts.append(now)
-    _failed_attempts[identifier] = _prune(attempts, now)
+    pruned = _prune(_failed_attempts.get(identifier, []) + [now], now)
+    if pruned:
+        _failed_attempts[identifier] = pruned
+    elif identifier in _failed_attempts:
+        del _failed_attempts[identifier]
     if client_ip:
-        ip_attempts = _failed_by_ip.setdefault(client_ip, [])
-        ip_attempts.append(now)
-        _failed_by_ip[client_ip] = _prune(ip_attempts, now)
+        pruned_ip = _prune(_failed_by_ip.get(client_ip, []) + [now], now)
+        if pruned_ip:
+            _failed_by_ip[client_ip] = pruned_ip
+        elif client_ip in _failed_by_ip:
+            del _failed_by_ip[client_ip]
 
 
 def _is_locked_out(identifier: str, client_ip: str | None) -> bool:
@@ -72,14 +76,12 @@ def validate_api_key_format(key: str) -> bool:
 
 
 def api_key_guard_factory(parse_api_keys: Callable[[str], set[str]] = _parse_api_keys):
+    accepted_keys = parse_api_keys(settings.api_keys) if settings.api_keys else set()
+
     async def require_api_key(
         request: Request,
         x_api_key: str | None = Header(default=None, alias="X-API-Key"),
     ) -> None:
-        if not settings.api_keys:
-            return
-
-        accepted_keys = parse_api_keys(settings.api_keys)
         if not accepted_keys:
             return
 

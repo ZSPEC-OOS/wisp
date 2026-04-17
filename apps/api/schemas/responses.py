@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -61,7 +63,7 @@ class ResearchResponse(BaseModel):
 
 class CrawlJobResponse(BaseModel):
     job_id: str
-    status: str
+    status: Literal["pending", "running", "done", "failed"]
     created_at: str
     result: dict | None = None
     error: str | None = None
