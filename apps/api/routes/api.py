@@ -21,8 +21,61 @@ from packages.search.pipeline import rerank_passages
 
 _db_logger = logging.getLogger("wisp.db_write")
 
-# In-memory async crawl job store: job_id -> {status, created_at, result, error}
+# In-memory crawl job store (fallback when Redis is not configured)
 _crawl_jobs: dict[str, dict] = {}
+
+# ── Crawl job persistence helpers ────────────────────────────────────────────
+
+_JOB_TTL = 3600  # seconds — jobs auto-expire from Redis after 1 h
+
+async def _job_set(job_id: str, data: dict) -> None:
+    """Write job data. Redis when available, else in-memory dict."""
+    if settings.redis_url:
+        try:
+            from apps.api.dependencies.services import cache as _cache
+            if hasattr(_cache, "_get_redis"):
+                r = await _cache._get_redis()
+                await r.setex(
+                    f"wisp:job:{job_id}",
+                    _JOB_TTL,
+                    _json.dumps(data, default=str),
+                )
+                return
+        except Exception:
+            pass
+    _crawl_jobs[job_id] = data
+
+
+async def _job_update(job_id: str, patch: dict) -> None:
+    """Merge patch into existing job. Redis when available, else in-memory."""
+    if settings.redis_url:
+        try:
+            from apps.api.dependencies.services import cache as _cache
+            if hasattr(_cache, "_get_redis"):
+                r = await _cache._get_redis()
+                raw = await r.get(f"wisp:job:{job_id}")
+                current = _json.loads(raw) if raw else {}
+                current.update(patch)
+                await r.setex(f"wisp:job:{job_id}", _JOB_TTL, _json.dumps(current, default=str))
+                return
+        except Exception:
+            pass
+    if job_id in _crawl_jobs:
+        _crawl_jobs[job_id].update(patch)
+
+
+async def _job_get(job_id: str) -> dict | None:
+    """Fetch job data. Redis when available, else in-memory."""
+    if settings.redis_url:
+        try:
+            from apps.api.dependencies.services import cache as _cache
+            if hasattr(_cache, "_get_redis"):
+                r = await _cache._get_redis()
+                raw = await r.get(f"wisp:job:{job_id}")
+                return _json.loads(raw) if raw else None
+        except Exception:
+            pass
+    return _crawl_jobs.get(job_id)
 
 router = APIRouter()
 public_router = APIRouter()
@@ -158,7 +211,7 @@ async def readyz() -> Response:
 async def health() -> HealthResponse:
     """Detailed health — checks cache, LLM, and search provider."""
     import httpx as _httpx
-    stats = cache.stats()
+    stats = await cache.stats()
     checks: dict[str, dict] = {"cache": {"status": "ok", "size": stats["size"]}}
 
     if settings.searxng_url:
@@ -196,7 +249,7 @@ async def metrics() -> Response:
 async def extract(payload: ExtractRequest) -> ExtractResponse:
     REQ_COUNTER.labels(endpoint="extract").inc()
     key = f"extract:{','.join(sorted(str(u) for u in payload.urls))}:{payload.format}:{payload.include_images}"
-    cached = cache.get(key)
+    cached = await cache.get(key)
     if cached:
         CACHE_HITS.labels(endpoint="extract").inc()
         return ExtractResponse(**cached)
@@ -220,7 +273,7 @@ async def extract(payload: ExtractRequest) -> ExtractResponse:
         failure_count=failure_count,
     )
     if failure_count == 0:
-        cache.set(key, body.model_dump(mode="json"), ttl=3600)
+        await cache.set(key, body.model_dump(mode="json"), ttl=3600)
     return body
 
 
@@ -233,7 +286,7 @@ async def search(payload: SearchRequest) -> SearchResponse:
         f":{','.join(sorted(payload.allowed_domains or []))}"
         f":{','.join(sorted(payload.blocked_domains or []))}"
     )
-    cached = cache.get(key)
+    cached = await cache.get(key)
     if cached:
         CACHE_HITS.labels(endpoint="search").inc()
         return SearchResponse(**cached)
@@ -294,7 +347,7 @@ async def search(payload: SearchRequest) -> SearchResponse:
         warnings=warnings or None,
     )
     if not warnings:
-        cache.set(key, body.model_dump(mode="json"))
+        await cache.set(key, body.model_dump(mode="json"))
     asyncio.create_task(_persist_search(payload.query))
     return body
 
@@ -306,7 +359,7 @@ async def crawl(payload: CrawlRequest) -> CrawlResponse:
         f"crawl:{payload.seed_url}:{payload.max_pages}:{payload.max_depth}:{payload.concurrency}"
         f":{','.join(sorted(payload.allowed_domains or []))}"
     )
-    cached = cache.get(key)
+    cached = await cache.get(key)
     if cached:
         CACHE_HITS.labels(endpoint="crawl").inc()
         return CrawlResponse(**cached)
@@ -327,7 +380,7 @@ async def crawl(payload: CrawlRequest) -> CrawlResponse:
         CRAWL_FAILURES.labels(reason=reason).inc()
 
     body = CrawlResponse(**out)
-    cache.set(key, out, ttl=300)
+    await cache.set(key, out, ttl=300)
     return body
 
 
@@ -352,7 +405,7 @@ async def research(payload: ResearchRequest) -> ResearchResponse:
         f":{','.join(sorted(payload.allowed_domains or []))}"
         f":{','.join(sorted(payload.blocked_domains or []))}"
     )
-    cached = cache.get(key)
+    cached = await cache.get(key)
     if cached:
         CACHE_HITS.labels(endpoint="research").inc()
         return ResearchResponse(**cached)
@@ -401,7 +454,7 @@ async def research(payload: ResearchRequest) -> ResearchResponse:
         LLM_USED_RATIO.set(_llm_req_used / _llm_req_total)
 
         body = ResearchResponse(**out)
-        cache.set(key, body.model_dump(mode="json"))
+        await cache.set(key, body.model_dump(mode="json"))
         asyncio.create_task(_persist_research(payload.query, payload.mode, out))
         return body
     except Exception as exc:
@@ -465,9 +518,13 @@ async def research_stream(payload: ResearchRequest) -> StreamingResponse:
 
 @protected_router.post("/crawl/jobs", response_model=CrawlJobResponse, dependencies=[Depends(_crawl_rate_limit)])
 async def start_crawl_job(payload: CrawlRequest) -> CrawlJobResponse:
-    """Start an async crawl and return a job ID to poll with GET /crawl/jobs/{job_id}."""
-    # Prune completed jobs older than 1 hour so the dict doesn't grow unbounded
-    cutoff = _datetime.now(_tz.utc).timestamp() - 3600
+    """Start an async crawl; returns a job_id to poll via GET /crawl/jobs/{job_id}.
+
+    Jobs persist in Redis (when configured) so any worker can serve the poll request.
+    Falls back to in-memory when Redis is not available.
+    """
+    # Prune in-memory stale jobs (Redis handles expiry natively via SETEX TTL)
+    cutoff = _datetime.now(_tz.utc).timestamp() - _JOB_TTL
     stale = [jid for jid, j in _crawl_jobs.items()
              if j["status"] in ("done", "failed") and j.get("ts", 0) < cutoff]
     for jid in stale:
@@ -475,11 +532,15 @@ async def start_crawl_job(payload: CrawlRequest) -> CrawlJobResponse:
 
     job_id = _uuid.uuid4().hex
     created_at = _datetime.now(_tz.utc).isoformat()
-    _crawl_jobs[job_id] = {"status": "pending", "created_at": created_at, "result": None, "error": None, "ts": _datetime.now(_tz.utc).timestamp()}
+    await _job_set(job_id, {
+        "status": "pending", "created_at": created_at,
+        "result": None, "error": None,
+        "ts": _datetime.now(_tz.utc).timestamp(),
+    })
     REQ_COUNTER.labels(endpoint="crawl_job").inc()
 
     async def _run_job() -> None:
-        _crawl_jobs[job_id]["status"] = "running"
+        await _job_update(job_id, {"status": "running"})
         try:
             out = await crawl_service.crawl(
                 seed_url=str(payload.seed_url),
@@ -489,9 +550,9 @@ async def start_crawl_job(payload: CrawlRequest) -> CrawlJobResponse:
                 timeout_seconds=payload.timeout_seconds,
                 concurrency=payload.concurrency,
             )
-            _crawl_jobs[job_id].update({"status": "done", "result": out})
+            await _job_update(job_id, {"status": "done", "result": out})
         except Exception as exc:
-            _crawl_jobs[job_id].update({"status": "failed", "error": str(exc)})
+            await _job_update(job_id, {"status": "failed", "error": str(exc)})
 
     asyncio.create_task(_run_job())
     return CrawlJobResponse(job_id=job_id, status="pending", created_at=created_at)
@@ -500,7 +561,7 @@ async def start_crawl_job(payload: CrawlRequest) -> CrawlJobResponse:
 @protected_router.get("/crawl/jobs/{job_id}", response_model=CrawlJobResponse)
 async def get_crawl_job(job_id: str) -> CrawlJobResponse:
     """Poll the status of an async crawl job."""
-    job = _crawl_jobs.get(job_id)
+    job = await _job_get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job_not_found")
     return CrawlJobResponse(

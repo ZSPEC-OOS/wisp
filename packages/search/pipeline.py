@@ -90,21 +90,19 @@ def _bm25_snippet_scores(query: str, results: list[SearchResult]) -> list[float]
     return [float(s) / max_s for s in raw_scores]
 
 
-def score_result(result: SearchResult) -> SearchResult:
+def score_result(result: SearchResult, topic: str = "general") -> SearchResult:
     trust = trust_weight(result.source_domain)
     now = datetime.now(timezone.utc)
 
     if result.publication_year:
-        # Academic content: decay over 10 years from publication year
         years_old = now.year - result.publication_year
         freshness = max(0.2, 1.0 - (years_old / 10.0))
     elif result.published_date is not None:
-        # Web content with a known publish date: 90-day decay
         days_old = (now - result.published_date).days
-        freshness = max(0.1, 1.0 - (days_old / 90.0))
+        # News/finance: 48-hour relevance window; general web: 90-day window
+        window = 2.0 if topic in ("news", "finance") else 90.0
+        freshness = max(0.1, 1.0 - (days_old / window))
     else:
-        # No publish date available — use a neutral score rather than
-        # treating retrieved_at (= now) as a proxy, which always gave 1.0.
         freshness = 0.5
 
     result.trust_score = trust
@@ -117,8 +115,10 @@ class SearchService:
         self,
         provider: SearchProvider | None = None,
         academic_providers: list[SearchProvider] | None = None,
+        fallback_providers: list[SearchProvider] | None = None,
     ):
         self.provider = provider or DuckDuckGoProvider()
+        self.fallback_providers: list[SearchProvider] = fallback_providers or []
         self.academic_providers: list[SearchProvider] = academic_providers or []
 
     async def search(self, query: str, max_results: int = 10, topic: str = "general") -> list[SearchResult]:
@@ -135,9 +135,18 @@ class SearchService:
                 if isinstance(batch, list):
                     results.extend(batch)
         else:
-            results = await self.provider.search(query, max_results=max_results, topic=topic)
+            # Fan out to primary + fallbacks concurrently; merge for better coverage
+            all_web = [self.provider] + self.fallback_providers
+            batches = await asyncio.gather(
+                *[p.search(query, max_results=max_results, topic=topic) for p in all_web],
+                return_exceptions=True,
+            )
+            results = []
+            for batch in batches:
+                if isinstance(batch, list):
+                    results.extend(batch)
 
-        results = [score_result(r) for r in dedupe_results(results)]
+        results = [score_result(r, topic=topic) for r in dedupe_results(results)]
 
         # BM25 snippet relevance scoring
         bm25_scores = _bm25_snippet_scores(query, results)
