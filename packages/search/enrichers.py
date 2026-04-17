@@ -8,9 +8,13 @@ original SearchResult is returned unchanged.
 """
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from packages.common.models import SearchResult
+
+_logger = logging.getLogger("wisp.enrichers")
 
 
 class UnpaywallResolver:
@@ -38,7 +42,8 @@ class UnpaywallResolver:
                     return None
                 r.raise_for_status()
                 data = r.json()
-            except Exception:
+            except Exception as exc:
+                _logger.warning("unpaywall_resolve_failed", extra={"doi": doi, "error": str(exc)})
                 return None
 
         if not data.get("is_oa"):
@@ -78,7 +83,8 @@ class CrossRefEnricher:
                     return result
                 r.raise_for_status()
                 msg = r.json().get("message", {})
-            except Exception:
+            except Exception as exc:
+                _logger.warning("crossref_enrich_failed", extra={"doi": result.doi, "error": str(exc)})
                 return result
 
         if not result.authors:

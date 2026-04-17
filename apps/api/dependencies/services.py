@@ -5,7 +5,7 @@ from packages.map.service import MapService
 from packages.research.llm import LlmSynthesisClient
 from packages.research.service import ResearchService
 from packages.search.academic_providers import ArxivProvider, OpenAlexProvider, SemanticScholarProvider
-from packages.search.enrichers import UnpaywallResolver
+from packages.search.enrichers import CrossRefEnricher, UnpaywallResolver
 from packages.search.pipeline import SearchService
 from packages.search.providers import DuckDuckGoProvider, SearXNGProvider
 from packages.storage.cache import TTLCache
@@ -32,8 +32,9 @@ _web_provider = (
 
 search_service = SearchService(provider=_web_provider, academic_providers=_academic_providers)
 
-# Unpaywall resolver — only active when an email is configured (required by ToS)
+# Academic enrichers — both require mailto for polite-pool access
 _unpaywall = UnpaywallResolver(email=settings.academic_mailto) if settings.academic_mailto else None
+_crossref  = CrossRefEnricher(mailto=settings.academic_mailto) if settings.academic_mailto else None
 
 crawl_service = CrawlService(extractor=extract_service)
 map_service   = MapService(crawler=crawl_service)
@@ -46,6 +47,7 @@ research_service = ResearchService(
     search=search_service,
     extract=extract_service,
     unpaywall=_unpaywall,
+    crossref=_crossref,
     llm=_llm_client,
 )
 cache = TTLCache(ttl_seconds=settings.cache_ttl_seconds)

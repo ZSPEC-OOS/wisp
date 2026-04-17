@@ -7,6 +7,7 @@ accepts an API key for higher rate limits.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 import httpx
@@ -15,6 +16,8 @@ from bs4 import BeautifulSoup
 from packages.common.models import SearchResult
 from packages.common.url import domain_of
 from packages.search.providers import SearchProvider
+
+_logger = logging.getLogger("wisp.academic")
 
 
 def _now() -> datetime:
@@ -56,7 +59,8 @@ class OpenAlexProvider(SearchProvider):
                 r = await client.get("https://api.openalex.org/works", params=params)
                 r.raise_for_status()
                 data = r.json()
-            except Exception:
+            except Exception as exc:
+                _logger.warning("openalex_search_failed", extra={"query": query, "error": str(exc)})
                 return []
 
         results = []
@@ -129,7 +133,8 @@ class ArxivProvider(SearchProvider):
             try:
                 r = await client.get("http://export.arxiv.org/api/query", params=params)
                 r.raise_for_status()
-            except Exception:
+            except Exception as exc:
+                _logger.warning("arxiv_search_failed", extra={"query": query, "error": str(exc)})
                 return []
 
         soup = BeautifulSoup(r.text, "lxml-xml")
@@ -205,7 +210,8 @@ class SemanticScholarProvider(SearchProvider):
                 )
                 r.raise_for_status()
                 data = r.json()
-            except Exception:
+            except Exception as exc:
+                _logger.warning("semantic_scholar_search_failed", extra={"query": query, "error": str(exc)})
                 return []
 
         results = []

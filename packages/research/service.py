@@ -14,7 +14,7 @@ from packages.research.evidence import (
 )
 from packages.research.llm import LlmSynthesisClient
 from packages.research.synthesis_policy import should_use_llm
-from packages.search.enrichers import UnpaywallResolver
+from packages.search.enrichers import CrossRefEnricher, UnpaywallResolver
 from apps.api.config import settings
 from packages.search.pipeline import SearchService, _embedding_rerank, rerank_passages
 
@@ -91,12 +91,14 @@ class ResearchService:
         search: SearchService,
         extract: ExtractService,
         unpaywall: UnpaywallResolver | None = None,
+        crossref: CrossRefEnricher | None = None,
         llm: LlmSynthesisClient | None = None,
     ):
-        self.search   = search
-        self.extract  = extract
+        self.search    = search
+        self.extract   = extract
         self.unpaywall = unpaywall
-        self.llm      = llm
+        self.crossref  = crossref
+        self.llm       = llm
 
     async def run(
         self,
@@ -199,7 +201,12 @@ class ResearchService:
         unique = {str(r.url): r for r in all_results}
         top    = list(unique.values())[:max_sources]
 
-        # ── Unpaywall OA resolution ───────────────────────────────────────
+        # ── Academic metadata enrichment (CrossRef → Unpaywall) ──────────
+        # CrossRef fills publication year and authors; run first so freshness
+        # scoring downstream has accurate metadata.
+        if self.crossref:
+            top = list(await asyncio.gather(*[self.crossref.enrich(r) for r in top]))
+        # Unpaywall resolves open-access PDF URLs for DOI-bearing results.
         if self.unpaywall:
             top = list(await asyncio.gather(*[self.unpaywall.enrich(r) for r in top]))
 
