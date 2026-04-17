@@ -1,4 +1,8 @@
-"""Stage 3: Extract text from a PDF file.
+"""Stage 3: Extract text from PDF data.
+
+Two entry points:
+  parse_bytes(data: bytes) -> str   — for in-memory PDF bytes (primary path)
+  extract_text(path: str)  -> str   — for on-disk files (kept for CLI/testing)
 
 Tries pdfplumber first (richer layout awareness), falls back to pypdf, then
 pymupdf (fitz).  All three are optional; at least one should be installed via
@@ -6,88 +10,78 @@ the `academic` or `academic-pipeline` extra.
 """
 from __future__ import annotations
 
+import io
 import logging
 
 _logger = logging.getLogger("wisp.academic_pipeline.parse")
 
 try:
-    import pdfplumber as _pdfplumber  # pip install pdfplumber
+    import pdfplumber as _pdfplumber
     _PDFPLUMBER = True
 except ImportError:
     _PDFPLUMBER = False
 
 try:
-    import pypdf as _pypdf  # already in the `academic` extra
+    import pypdf as _pypdf
     _PYPDF = True
 except ImportError:
     _PYPDF = False
 
 try:
-    import fitz as _fitz  # pip install pymupdf
+    import fitz as _fitz
     _FITZ = True
 except ImportError:
     _FITZ = False
 
 
-def _extract_pdfplumber(path: str) -> str:
+def _join(parts: list[str]) -> str:
+    return "\n\n".join(p for p in parts if p.strip())
+
+
+def _parse_pdfplumber_bytes(data: bytes) -> str:
     parts: list[str] = []
-    with _pdfplumber.open(path) as pdf:
+    with _pdfplumber.open(io.BytesIO(data)) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
-            if text and text.strip():
+            if text:
                 parts.append(text.strip())
-    return "\n\n".join(parts)
+    return _join(parts)
 
 
-def _extract_pypdf(path: str) -> str:
-    import io
-    reader = _pypdf.PdfReader(path)
-    parts: list[str] = []
-    for page in reader.pages:
-        text = page.extract_text() or ""
-        if text.strip():
-            parts.append(text.strip())
-    return "\n\n".join(parts)
+def _parse_pypdf_bytes(data: bytes) -> str:
+    reader = _pypdf.PdfReader(io.BytesIO(data))
+    return _join([page.extract_text() or "" for page in reader.pages])
 
 
-def _extract_fitz(path: str) -> str:
-    doc = _fitz.open(path)
-    parts: list[str] = []
-    for page in doc:
-        text = page.get_text()
-        if text.strip():
-            parts.append(text.strip())
+def _parse_fitz_bytes(data: bytes) -> str:
+    doc = _fitz.open(stream=data, filetype="pdf")
+    parts = [page.get_text() for page in doc]
     doc.close()
-    return "\n\n".join(parts)
+    return _join(parts)
+
+
+def parse_bytes(data: bytes) -> str:
+    """Extract text from raw PDF *data* (in-memory)."""
+    for name, available, fn in [
+        ("pdfplumber", _PDFPLUMBER, _parse_pdfplumber_bytes),
+        ("pypdf",      _PYPDF,      _parse_pypdf_bytes),
+        ("pymupdf",    _FITZ,       _parse_fitz_bytes),
+    ]:
+        if not available:
+            continue
+        try:
+            text = fn(data)
+            if text.strip():
+                return text
+        except Exception as exc:
+            _logger.warning("%s_failed err=%s", name, exc)
+
+    raise RuntimeError(
+        "No PDF parser succeeded. Install at least one of: pdfplumber, pypdf, pymupdf."
+    )
 
 
 def extract_text(pdf_path: str) -> str:
-    """Return extracted text from *pdf_path*, using the best available library."""
-    if _PDFPLUMBER:
-        try:
-            text = _extract_pdfplumber(pdf_path)
-            if text.strip():
-                return text
-        except Exception as exc:
-            _logger.warning("pdfplumber_failed path=%s error=%s", pdf_path, exc)
-
-    if _PYPDF:
-        try:
-            text = _extract_pypdf(pdf_path)
-            if text.strip():
-                return text
-        except Exception as exc:
-            _logger.warning("pypdf_failed path=%s error=%s", pdf_path, exc)
-
-    if _FITZ:
-        try:
-            text = _extract_fitz(pdf_path)
-            if text.strip():
-                return text
-        except Exception as exc:
-            _logger.warning("fitz_failed path=%s error=%s", pdf_path, exc)
-
-    raise RuntimeError(
-        f"No PDF parser available or all parsers failed for {pdf_path}. "
-        "Install at least one of: pdfplumber, pypdf, pymupdf."
-    )
+    """Extract text from a PDF file at *pdf_path*."""
+    with open(pdf_path, "rb") as f:
+        return parse_bytes(f.read())

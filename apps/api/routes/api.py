@@ -139,6 +139,7 @@ _llm_req_used  = 0
 # Per-endpoint rate limit dependencies for heavier operations
 _research_rate_limit = make_rate_limit_dep(lambda: settings.research_rate_limit_per_minute)
 _crawl_rate_limit = make_rate_limit_dep(lambda: settings.crawl_rate_limit_per_minute)
+_academic_rate_limit = make_rate_limit_dep(lambda: settings.academic_rate_limit_per_minute)
 
 
 # ── Fire-and-forget DB write helpers ─────────────────────────────────────────
@@ -516,20 +517,24 @@ async def research_stream(payload: ResearchRequest) -> StreamingResponse:
     )
 
 
-@protected_router.post("/academic", response_model=AcademicResponse)
+@protected_router.post(
+    "/academic",
+    response_model=AcademicResponse,
+    dependencies=[Depends(_academic_rate_limit)],
+)
 async def academic(payload: AcademicRequest) -> AcademicResponse:
-    """Prompt → DOI → PDF → text → answer pipeline for academic papers."""
+    """Prompt → search → in-memory PDF fetch (OA + optional Sci-Hub) → text → answer."""
     REQ_COUNTER.labels(endpoint="academic").inc()
 
     from packages.academic_pipeline.pipeline import AcademicPipeline, PipelineConfig
 
+    # Sci-Hub fallback requires explicit opt-in at both request and config level
     use_scihub = payload.use_scihub and settings.academic_scihub_enabled
     cfg = PipelineConfig(
         prompt=payload.prompt,
         question=payload.question,
         max_papers=min(payload.max_papers, settings.academic_pipeline_max_papers),
         use_scihub=use_scihub,
-        output_dir=settings.academic_output_dir,
         mailto=settings.academic_mailto,
         s2_api_key=settings.s2_api_key,
         llm_base_url=settings.llm_base_url if settings.llm_enabled else "",
@@ -540,8 +545,7 @@ async def academic(payload: AcademicRequest) -> AcademicResponse:
 
     try:
         with LATENCY.labels(stage="academic").time():
-            pipeline = AcademicPipeline(cfg)
-            results = await pipeline.run()
+            results = await AcademicPipeline(cfg).run()
     except Exception as exc:
         ERRORS.labels(endpoint="academic", error_type=type(exc).__name__).inc()
         raise HTTPException(status_code=500, detail=f"academic_pipeline_failed: {exc}") from exc
@@ -554,7 +558,7 @@ async def academic(payload: AcademicRequest) -> AcademicResponse:
             publication_year=r.publication_year,
             url=r.url,
             oa_pdf_url=r.oa_pdf_url,
-            pdf_path=r.pdf_path,
+            content_fetched=r.content_fetched,
             parse_error=r.parse_error,
             answer=r.answer,
             provider=r.provider,
@@ -566,7 +570,7 @@ async def academic(payload: AcademicRequest) -> AcademicResponse:
         question=payload.question,
         papers=papers,
         papers_found=len(papers),
-        pdfs_downloaded=sum(1 for p in papers if p.pdf_path),
+        content_fetched=sum(1 for p in papers if p.content_fetched),
         answers_generated=sum(1 for p in papers if p.answer),
     )
 

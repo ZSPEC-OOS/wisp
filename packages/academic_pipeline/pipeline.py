@@ -1,13 +1,17 @@
-"""Main orchestrator: prompt → papers → PDFs → text → answers."""
+"""Main orchestrator: prompt → papers → PDF bytes → text → answers.
+
+Nothing is written to disk.  PDF content is fetched into memory, parsed,
+and discarded after the answer is produced.
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from packages.academic_pipeline.answer import answer_question
-from packages.academic_pipeline.download import PdfDownloader
-from packages.academic_pipeline.parse import extract_text
+from packages.academic_pipeline.download import PdfFetcher
+from packages.academic_pipeline.parse import parse_bytes
 from packages.academic_pipeline.search import AcademicSearcher
 from packages.common.models import SearchResult
 
@@ -22,9 +26,9 @@ class PaperResult:
     publication_year: int | None
     url: str
     oa_pdf_url: str | None
-    pdf_path: str | None           # None if download failed
-    parse_error: str | None        # None if parsing succeeded
-    answer: str | None             # None if question was not provided
+    content_fetched: bool          # True if PDF bytes were retrieved
+    parse_error: str | None        # Set if text extraction failed
+    answer: str | None             # Set when question provided and content available
     provider: str
 
 
@@ -34,11 +38,10 @@ class PipelineConfig:
     question: str = ""
     max_papers: int = 5
     use_scihub: bool = False
-    output_dir: str = "./papers"
     # Search settings
     mailto: str = ""
     s2_api_key: str = ""
-    # LLM settings (optional)
+    # LLM settings (optional — falls back to extractive answer)
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = ""
@@ -52,10 +55,7 @@ class AcademicPipeline:
             mailto=config.mailto,
             s2_api_key=config.s2_api_key,
         )
-        self._downloader = PdfDownloader(
-            output_dir=config.output_dir,
-            use_scihub=config.use_scihub,
-        )
+        self._fetcher = PdfFetcher(use_scihub=config.use_scihub)
 
     async def run(self) -> list[PaperResult]:
         cfg = self._cfg
@@ -64,26 +64,26 @@ class AcademicPipeline:
         papers = await self._searcher.search(cfg.prompt, max_papers=cfg.max_papers)
         _logger.info("found %d papers", len(papers))
 
-        # Download PDFs concurrently
-        pdf_paths: list[str | None] = await asyncio.gather(
-            *[self._downloader.download(p) for p in papers], return_exceptions=False
+        # Fetch PDF bytes concurrently for all papers
+        pdf_data: list[bytes | None] = await asyncio.gather(
+            *[self._fetcher.fetch(p) for p in papers]
         )
 
-        results: list[PaperResult] = []
-        for paper, pdf_path in zip(papers, pdf_paths):
-            results.append(await self._process(paper, pdf_path))
+        results = await asyncio.gather(
+            *[self._process(paper, data) for paper, data in zip(papers, pdf_data)]
+        )
 
-        await self._downloader.aclose()
-        return results
+        await self._fetcher.aclose()
+        return list(results)
 
-    async def _process(self, paper: SearchResult, pdf_path: str | None) -> PaperResult:
+    async def _process(self, paper: SearchResult, data: bytes | None) -> PaperResult:
         cfg = self._cfg
         parse_error: str | None = None
         answer: str | None = None
 
-        if pdf_path and cfg.question:
+        if data and cfg.question:
             try:
-                text = await asyncio.to_thread(extract_text, pdf_path)
+                text = await asyncio.to_thread(parse_bytes, data)
                 answer = await answer_question(
                     cfg.question,
                     text,
@@ -96,7 +96,7 @@ class AcademicPipeline:
                 )
             except Exception as exc:
                 parse_error = str(exc)
-                _logger.warning("process_failed title=%r error=%s", paper.title[:60], exc)
+                _logger.warning("process_failed title=%r err=%s", paper.title[:60], exc)
 
         return PaperResult(
             title=paper.title,
@@ -105,7 +105,7 @@ class AcademicPipeline:
             publication_year=paper.publication_year,
             url=str(paper.url),
             oa_pdf_url=paper.oa_pdf_url,
-            pdf_path=pdf_path,
+            content_fetched=data is not None,
             parse_error=parse_error,
             answer=answer,
             provider=paper.provider,

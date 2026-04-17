@@ -1,116 +1,142 @@
-"""Stage 2: Download PDFs from open-access sources.
+"""Stage 2: Fetch PDF bytes into memory from open-access or Sci-Hub sources.
 
 Resolution order:
-  1. result.oa_pdf_url  (already resolved by Unpaywall / provider)
-  2. Sci-Hub mirror list (optional, user must opt-in via use_scihub=True)
+  1. result.oa_pdf_url  (Unpaywall / provider — legal OA)
+  2. Sci-Hub mirror list (opt-in only; never hit by default)
 
-PDFs are saved to output_dir/<sanitised-title>.pdf.  Returns the local path
-on success, or None if no source could deliver a valid PDF.
+Nothing is written to disk; callers receive raw bytes or None.
+
+Sci-Hub note: mirrors serve an HTML landing page whose <embed> or <iframe>
+contains the actual PDF URL.  We parse that page to locate the PDF before
+fetching it.  Mirrors are tried concurrently; the first valid PDF wins.
 """
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
-import re
-from pathlib import Path
 
 import httpx
+from bs4 import BeautifulSoup
 
 from packages.common.models import SearchResult
 
 _logger = logging.getLogger("wisp.academic_pipeline.download")
 
-# Known Sci-Hub mirror pattern — callers opt-in; we never hit these by default.
+_PDF_MAGIC = b"%PDF"
+
 _SCIHUB_MIRRORS = [
     "https://sci-hub.se",
     "https://sci-hub.st",
     "https://sci-hub.ru",
 ]
 
-_PDF_MAGIC = b"%PDF"
-
-
-def _safe_filename(title: str, doi: str | None) -> str:
-    slug = re.sub(r"[^\w\s-]", "", title.lower())
-    slug = re.sub(r"[\s_-]+", "_", slug).strip("_")[:60]
-    suffix = hashlib.md5((doi or title).encode()).hexdigest()[:8]
-    return f"{slug}_{suffix}.pdf"
-
 
 def _is_pdf(data: bytes) -> bool:
     return data[:4] == _PDF_MAGIC
 
 
-async def _fetch(client: httpx.AsyncClient, url: str) -> bytes | None:
+def _extract_pdf_url_from_html(html: str, mirror_base: str) -> str | None:
+    """Parse a Sci-Hub landing page and return the embedded PDF URL."""
+    soup = BeautifulSoup(html, "lxml")
+    for tag in ("embed", "iframe"):
+        el = soup.find(tag, src=True)
+        if el:
+            src: str = el["src"]
+            # Scheme-relative → absolute
+            if src.startswith("//"):
+                src = "https:" + src
+            # Relative → absolute using mirror base
+            elif src.startswith("/"):
+                src = mirror_base + src
+            return src
+    return None
+
+
+async def _fetch_direct(client: httpx.AsyncClient, url: str) -> bytes | None:
     try:
         r = await client.get(url, follow_redirects=True)
         r.raise_for_status()
         if _is_pdf(r.content):
             return r.content
-        _logger.debug("not_a_pdf url=%s content_type=%s", url, r.headers.get("content-type"))
+        _logger.debug("not_pdf url=%s ct=%s", url, r.headers.get("content-type"))
     except Exception as exc:
-        _logger.debug("fetch_failed url=%s error=%s", url, exc)
+        _logger.debug("fetch_failed url=%s err=%s", url, exc)
     return None
+
+
+async def _scihub_one_mirror(client: httpx.AsyncClient, mirror: str, doi: str) -> bytes | None:
+    landing_url = f"{mirror}/{doi}"
+    try:
+        r = await client.get(landing_url, follow_redirects=True)
+        r.raise_for_status()
+    except Exception as exc:
+        _logger.debug("scihub_mirror_failed mirror=%s err=%s", mirror, exc)
+        return None
+
+    if _is_pdf(r.content):
+        return r.content
+
+    # Parse the HTML landing page for the embedded PDF URL
+    pdf_url = _extract_pdf_url_from_html(r.text, mirror)
+    if not pdf_url:
+        _logger.debug("scihub_no_pdf_url mirror=%s doi=%s", mirror, doi)
+        return None
+
+    return await _fetch_direct(client, pdf_url)
 
 
 async def _scihub_fetch(client: httpx.AsyncClient, doi: str) -> bytes | None:
-    for mirror in _SCIHUB_MIRRORS:
-        data = await _fetch(client, f"{mirror}/{doi}")
-        if data:
-            return data
+    """Try all mirrors concurrently; return the first valid PDF bytes."""
+    tasks = [asyncio.create_task(_scihub_one_mirror(client, m, doi)) for m in _SCIHUB_MIRRORS]
+    for coro in asyncio.as_completed(tasks):
+        result = await coro
+        if result is not None:
+            for t in tasks:
+                t.cancel()
+            return result
     return None
 
 
-class PdfDownloader:
+class PdfFetcher:
+    """Fetch PDF content into memory — no disk I/O."""
+
     def __init__(
         self,
-        output_dir: str = "./papers",
         use_scihub: bool = False,
         timeout: int = 30,
         concurrency: int = 4,
     ) -> None:
-        self.output_dir = Path(output_dir)
         self.use_scihub = use_scihub
         self._sem = asyncio.Semaphore(concurrency)
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=float(timeout), write=10.0, pool=5.0),
-            headers={"User-Agent": "AcademicPipeline/0.1 (open-access only)"},
+            headers={"User-Agent": "AcademicPipeline/0.1 (+https://github.com/zspec-oos/wisp)"},
             follow_redirects=True,
         )
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def download(self, result: SearchResult) -> str | None:
-        """Download PDF for *result*; return local path or None."""
+    async def fetch(self, result: SearchResult) -> bytes | None:
+        """Return raw PDF bytes for *result*, or None if unavailable."""
         async with self._sem:
-            return await self._download_one(result)
+            return await self._fetch_one(result)
 
-    async def _download_one(self, result: SearchResult) -> str | None:
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        filename = _safe_filename(result.title, result.doi)
-        dest = self.output_dir / filename
-
-        if dest.exists():
-            _logger.info("already_cached path=%s", dest)
-            return str(dest)
-
-        data: bytes | None = None
-
-        # 1. Direct OA PDF URL
+    async def _fetch_one(self, result: SearchResult) -> bytes | None:
+        # 1. Legal open-access URL (Unpaywall / provider)
         if result.oa_pdf_url:
-            data = await _fetch(self._client, result.oa_pdf_url)
+            data = await _fetch_direct(self._client, result.oa_pdf_url)
+            if data:
+                _logger.info("oa_fetch_ok title=%r bytes=%d", result.title[:50], len(data))
+                return data
 
         # 2. Sci-Hub (opt-in only)
-        if data is None and self.use_scihub and result.doi:
+        if self.use_scihub and result.doi:
             _logger.info("trying_scihub doi=%s", result.doi)
             data = await _scihub_fetch(self._client, result.doi)
+            if data:
+                _logger.info("scihub_fetch_ok doi=%s bytes=%d", result.doi, len(data))
+                return data
 
-        if data is None:
-            _logger.warning("pdf_unavailable title=%r doi=%s", result.title[:60], result.doi)
-            return None
-
-        dest.write_bytes(data)
-        _logger.info("pdf_saved path=%s bytes=%d", dest, len(data))
-        return str(dest)
+        _logger.warning("content_unavailable title=%r doi=%s", result.title[:50], result.doi)
+        return None

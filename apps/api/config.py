@@ -28,9 +28,9 @@ class Settings(BaseSettings):
     s2_api_key: str = ""             # Optional Semantic Scholar key (higher rate limits)
     academic_max_results: int = 4    # Results per academic provider
     # Academic paper pipeline (POST /v1/academic)
-    academic_output_dir: str = "./papers"   # Local directory for downloaded PDFs
-    academic_scihub_enabled: bool = False   # Opt-in Sci-Hub fallback (off by default)
-    academic_pipeline_max_papers: int = 5   # Default max papers per request
+    academic_scihub_enabled: bool = False      # Opt-in Sci-Hub fallback (off by default)
+    academic_pipeline_max_papers: int = 5      # Hard cap on papers per request
+    academic_rate_limit_per_minute: int = 0    # 0 = use global rate limit
     searxng_url: str = ""            # e.g. "http://localhost:8080" — self-hosted SearXNG instance
     brave_api_key: str = ""          # Brave Search API key — enables high-quality direct web search
 
