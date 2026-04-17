@@ -77,6 +77,7 @@ class _RedisLimiter:
         self._redis_url = redis_url
         self._redis: Any = None
         self._lock = asyncio.Lock()
+        self._failure_streak: int = 0
 
     async def _get_redis(self):
         if self._redis is not None:
@@ -108,11 +109,15 @@ class _RedisLimiter:
                     detail="rate_limit_exceeded",
                     headers={"Retry-After": str(max(1, seconds_left))},
                 )
+            self._failure_streak = 0
         except HTTPException:
             raise
         except Exception:
-            # Redis unavailable — degrade gracefully to allow the request
-            pass
+            # Redis unavailable — degrade gracefully; force reconnect after 3 consecutive failures
+            self._failure_streak += 1
+            if self._failure_streak >= 3:
+                self._redis = None
+                self._failure_streak = 0
 
     async def aclose(self) -> None:
         if self._redis is not None:
